@@ -1,0 +1,124 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import org.gradle.util.GradleVersion
+
+pluginManagement {
+  includeBuild('build-tools/geode-dependency-management')
+  includeBuild('build-tools/geode-repeat-test') {
+    dependencySubstitution {
+      substitute module('org.apache.geode.gradle:org.apache.geode.gradle.geode-repeat-test') using project(':')
+    }
+  }
+  includeBuild('build-tools/geode-build-tools') {
+    dependencySubstitution {
+      substitute module('org.apache.geode.gradle:org.apache.geode.gradle.geode-build-tools') using project(':')
+    }
+  }
+  includeBuild('build-tools/geode-testing-isolation') {
+    dependencySubstitution {
+      substitute module('org.apache.geode.gradle:org.apache.geode.gradle.geode-testing-isolation') using project(':')
+    }
+  }
+  includeBuild('build-tools/geode-annotation-processor')
+  includeBuild('build-tools/scripts')
+}
+
+rootProject.name = 'geode'
+
+// We want to see all test results.  This is equivalent to setting --continue on the command line.
+gradle.startParameter.continueOnFailure = true
+
+include 'geode-common'
+include 'geode-unsafe'
+include 'geode-junit'
+include 'geode-dunit'
+include 'geode-logging'
+include 'geode-jmh'
+include 'geode-membership'
+include 'geode-serialization'
+include 'geode-tcp-server'
+include 'geode-core'
+include 'geode-log4j'
+include 'geode-web'
+include 'geode-web-api'
+include 'geode-web-management'
+include 'geode-management'
+include 'geode-gfsh'
+include 'geode-pulse'
+include 'geode-pulse:geode-pulse-test'
+include 'geode-assembly'
+include 'geode-assembly:geode-assembly-test'
+include 'geode-rebalancer'
+include 'geode-lucene'
+include 'geode-lucene:geode-lucene-test'
+include 'geode-old-client-support'
+include 'geode-wan'
+include 'geode-cq'
+include 'geode-memcached'
+include 'geode-connectors'
+include 'geode-http-service'
+include 'extensions:geode-modules'
+include 'extensions:geode-modules-test'
+include 'extensions:geode-modules-tomcat7'
+include 'extensions:geode-modules-tomcat8'
+include 'extensions:geode-modules-tomcat9'
+include 'extensions:geode-modules-session-internal'
+include 'extensions:geode-modules-session'
+include 'extensions:geode-modules-assembly'
+include 'extensions:session-testing-war'
+include 'geode-concurrency-test'
+include 'boms:geode-client-bom'
+include 'boms:geode-all-bom'
+include 'static-analysis:pmd-rules'
+include 'geode-deployment'
+include 'geode-deployment:geode-deployment-legacy'
+include 'geode-server-all'
+
+
+['1.0.0-incubating',
+ '1.1.1',
+ '1.2.0',
+ '1.3.0',
+ '1.4.0',
+ '1.5.0',
+ '1.6.0',
+ '1.7.0',
+ '1.8.0',
+ '1.9.2',
+ '1.10.0',
+ '1.11.0',
+ '1.12.0',
+ '1.12.1', // Include for SSL protocol configuration changes in 1.12.1
+ '1.12.9',
+ '1.13.0', // Include for SSL protocol configuration changes in 1.13.1
+ '1.13.1',
+ '1.13.8',
+ '1.14.0', // Include for SSL protocol configuration changes in 1.14.0
+ '1.14.4'].each {
+  include 'geode-old-versions:'.concat(it)
+}
+
+if (GradleVersion.current() < GradleVersion.version(minimumGradleVersion)) {
+  throw new GradleException('Running with unsupported Gradle Version. Use Gradle Wrapper or with Gradle version >= ' + minimumGradleVersion)
+}
+
+buildCache {
+  local {
+    enabled = true
+  }
+}

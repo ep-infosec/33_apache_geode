@@ -1,0 +1,4 @@
+org/apache/geode/management/internal/cli/commands/QueryCommandDistributedTestBase$FailsSerializationFilter
+org/apache/geode/management/internal/cli/commands/QueryCommandDistributedTestBase$Value
+org/apache/geode/test/dunit/log4j/LogWriterLogger
+org/apache/geode/test/dunit/log4j/LogWriterLogger$LogWriterLevel

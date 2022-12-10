@@ -1,0 +1,6 @@
+# Lucene Extensions command
+org.apache.geode.cache.lucene.internal.cli.commands.LuceneCreateIndexCommand
+org.apache.geode.cache.lucene.internal.cli.commands.LuceneDescribeIndexCommand
+org.apache.geode.cache.lucene.internal.cli.commands.LuceneDestroyIndexCommand
+org.apache.geode.cache.lucene.internal.cli.commands.LuceneListIndexCommand
+org.apache.geode.cache.lucene.internal.cli.commands.LuceneSearchIndexCommand

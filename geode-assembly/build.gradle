@@ -1,0 +1,601 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+plugins {
+  id 'standard-subproject-configuration'
+  id 'warnings'
+  id 'distribution'
+  id 'com.palantir.docker'
+  id 'geode-publish-common'
+}
+
+import org.apache.tools.ant.taskdefs.condition.Os
+import java.nio.file.Paths
+
+// This project aggressively reaches into many other projects and must wait for those configurations
+// to be evaluated and resolved.  Evaluation depends on each of these subprojects.
+evaluationDependsOnChildren()
+rootProject.subprojects.each {neighborProject ->
+  if (neighborProject != project) {
+    project.evaluationDependsOn(neighborProject.path)
+  }
+}
+
+
+// This subproject's 'publication' is not a jar and should not be constrained to match versions
+// in the geode-all-bom.
+project.ext.set('constrainVersionInBom', false)
+
+project.ext {artifactName = 'apache-geode'}
+
+configurations {
+  compositeTarget {
+    setDescription("Composite builds wishing to consume this apache-geode@tgz artifact must specify \"targetConfiguration = 'compositeTarget'\" for correct composite task dependency detection.")
+  }
+
+
+  geodeLibdirJars
+  gfshDependencies
+  geodeLibdirJarsDeprecated
+
+  // Configurations used to download and cache web application servers for session module testing
+  webServerTomcat6
+  webServerTomcat7
+  webServerTomcat8
+  webServerTomcat9
+  webServerJetty
+
+  geodeDependenciesJar {
+    setDescription("An 'archives' configuration without the legacy publication implications")
+  }
+
+  javadocOnly {
+    setDescription('Projects that must be included in the JavaDocs.')
+  }
+
+  defaultCacheConfigClasspath
+  defaultDistributionConfigClasspath
+}
+
+publishing {
+  publications {
+    maven(MavenPublication) {
+      artifactId = artifactName
+      artifact source: distTar, extension: 'tgz'
+    }
+  }
+}
+
+gradle.taskGraph.whenReady( { graph ->
+  tasks.withType(AbstractArchiveTask).findAll {
+    it.name.toLowerCase().contains("dist")
+  }.each { archive ->
+    archive.doLast {
+      ant.checksum file:"${archive.archivePath}", algorithm:"sha-256", format: 'MD5SUM', fileext: '.sha256'
+    }
+  }
+})
+
+artifacts {
+  compositeTarget distTar
+}
+
+repositories {
+  //This "repository" only exists to download tomcat-6, because the zip for tomcat 6 is
+  //not in a maven repo. Later versions of tomcat are.
+  ivy {
+    url 'https://archive.apache.org/'
+    patternLayout {
+      artifact '/dist/tomcat/tomcat-6/v6.0.37/bin/[organisation]-[module]-[revision].[ext]'
+    }
+    // Infer the metadata from the presence of the artifact
+    metadataSources { artifact() }
+  }
+  // For gradle tooling dependencies
+  maven {
+    url 'https://repo.gradle.org/gradle/libs-releases'
+  }
+}
+
+def webServersDir = "$buildDir/generated-resources/webservers"
+
+sourceSets {
+  distributedTest {
+    resources {
+      srcDirs webServersDir
+    }
+    output.dir(webServersDir, builtBy: 'downloadWebServers')
+  }
+}
+
+task downloadWebServers(type:Copy) {
+  from {configurations.findAll {it.name.startsWith("webServer")}}
+  into webServersDir
+}
+
+dependencies {
+  api(platform(project(':boms:geode-all-bom')))
+
+  geodeLibdirJars(project(':geode-server-all'))
+
+
+  // The complete runtime deps as defined in the server bom
+  geodeLibdirJarsDeprecated(platform(project(':boms:geode-all-bom')))
+  // Deprecated admin API
+  geodeLibdirJarsDeprecated(group: 'commons-modeler', name: 'commons-modeler') {
+    // geode-core, old admin api
+    transitive false
+  }
+  // Deprecated admin API
+  geodeLibdirJarsDeprecated(group: 'javax.mail', name: 'javax.mail-api')
+  // exclude mx4j, once the deprecated code is deleted we can remove these entirely
+  geodeLibdirJarsDeprecated('mx4j:mx4j')
+  geodeLibdirJarsDeprecated('mx4j:mx4j-remote')
+  geodeLibdirJarsDeprecated('mx4j:mx4j-tools')
+
+  // spring web should be only part of gfsh or pulse. It is in core due to incomplete refactoring
+  geodeLibdirJarsDeprecated(group: 'org.springframework', name: 'spring-web')
+
+  // Deprecated: Used to make geode-dependencies.jar point to geode-server-all.jar
+  geodeDependenciesJar(project(':geode-server-all')) {
+    transitive false
+  }
+
+  javadocOnly(project(':geode-server-all'))
+  javadocOnly(project(':extensions:geode-modules'))
+  javadocOnly(project(':extensions:geode-modules-session'))
+  javadocOnly(project(':extensions:geode-modules-tomcat7'))
+  javadocOnly(project(':extensions:geode-modules-tomcat9'))
+  javadocOnly(project(':extensions:geode-modules-tomcat8'))
+
+  testImplementation(project(':geode-core'))
+  testImplementation(project(':geode-gfsh'))
+  testImplementation(project(':geode-junit')) {
+    exclude module: 'geode-core'
+  }
+  testImplementation(project(':geode-log4j')) {
+    exclude module: 'geode-core'
+  }
+  testImplementation('org.assertj:assertj-core')
+
+  integrationTestImplementation(project(':geode-core'))
+  integrationTestImplementation(project(':geode-membership'))
+  integrationTestImplementation(project(':geode-gfsh'))
+  integrationTestImplementation(project(':geode-log4j')) {
+    exclude module: 'geode-core'
+  }
+  integrationTestImplementation(project(':geode-junit')) {
+    exclude module: 'geode-core'
+  }
+  integrationTestImplementation(project(':geode-dunit')) {
+    exclude module: 'geode-core'
+  }
+  integrationTestImplementation(project(':geode-pulse'))
+  integrationTestImplementation(project(':geode-assembly:geode-assembly-test'))
+  integrationTestImplementation(project(':geode-logging'))
+  integrationTestImplementation('org.apache.httpcomponents:httpclient')
+  integrationTestImplementation('org.springframework:spring-beans')
+  integrationTestImplementation('org.springframework:spring-context')
+  integrationTestImplementation('org.springframework:spring-web')
+  integrationTestImplementation('org.springframework.security:spring-security-oauth2-core')
+  integrationTestImplementation('org.springframework.security:spring-security-oauth2-client')
+  integrationTestImplementation('org.springframework.security:spring-security-oauth2-jose')
+  integrationTestImplementation('javax.annotation:javax.annotation-api')
+  integrationTestImplementation('javax.servlet:javax.servlet-api')
+
+
+  integrationTestRuntimeOnly('io.swagger.core.v3:swagger-annotations')
+  // these two modules are for testing only
+  integrationTestRuntimeOnly('com.fasterxml.jackson.datatype:jackson-datatype-joda')
+  integrationTestRuntimeOnly('joda-time:joda-time')
+
+  distributedTestCompileOnly(platform(project(':boms:geode-all-bom')))
+  distributedTestCompileOnly('io.swagger.core.v3:swagger-annotations')
+  distributedTestImplementation(project(':geode-gfsh'))
+  distributedTestImplementation(project(':geode-logging'))
+  distributedTestImplementation(project(':geode-membership'))
+  distributedTestImplementation(project(':geode-serialization'))
+  distributedTestImplementation(project(':geode-tcp-server'))
+  distributedTestImplementation(project(':geode-core'))
+  distributedTestImplementation(project(':geode-log4j')) {
+    exclude module: 'geode-core'
+  }
+  distributedTestImplementation(project(':geode-dunit')){
+    exclude module: 'geode-core'
+  }
+  distributedTestImplementation(project(':extensions:session-testing-war'))
+  distributedTestImplementation(project(':geode-assembly:geode-assembly-test'))
+  distributedTestImplementation('org.apache.httpcomponents:httpclient')
+  distributedTestImplementation('org.springframework:spring-web')
+  distributedTestImplementation(project(':geode-management'))
+  distributedTestImplementation(project(':geode-web-management'))
+  distributedTestImplementation('com.arakelian:java-jq')
+  distributedTestImplementation('javax.servlet:javax.servlet-api')
+
+  distributedTestRuntimeOnly(project(':extensions:geode-modules-session-internal')) {
+    exclude group: 'org.apache.tomcat'
+  }
+  distributedTestImplementation('org.codehaus.cargo:cargo-core-uberjar')
+
+  distributedTestRuntimeOnly('io.swagger.core.v3:swagger-annotations')
+  distributedTestRuntimeOnly(project(':geode-wan'))
+
+  acceptanceTestImplementation(project(':geode-server-all'))
+  acceptanceTestImplementation(project(':geode-dunit')) {
+    exclude module: 'geode-core'
+  }
+  acceptanceTestImplementation(project(':geode-assembly:geode-assembly-test'))
+
+  // This is used by 'gradle within gradle' tests. No need to bump this version; but if you do,
+  // don't have it be the same version as the outer gradle version.
+  acceptanceTestImplementation('org.gradle:gradle-tooling-api:' + DependencyConstraints.get('gradle-tooling-api.version'))
+
+  acceptanceTestImplementation('org.testcontainers:testcontainers')
+
+  uiTestImplementation(project(':geode-core'))
+  uiTestImplementation(project(':geode-dunit')) {
+    exclude module: 'geode-core'
+  }
+  uiTestImplementation(project(':geode-pulse'))
+  uiTestImplementation(project(':geode-pulse:geode-pulse-test'))
+  uiTestImplementation(project(':geode-assembly:geode-assembly-test'))
+  uiTestImplementation('org.seleniumhq.selenium:selenium-api')
+  uiTestImplementation('org.seleniumhq.selenium:selenium-remote-driver')
+  uiTestImplementation('org.seleniumhq.selenium:selenium-support')
+
+  uiTestRuntimeOnly(project(':geode-core'))
+  uiTestRuntimeOnly('org.seleniumhq.selenium:selenium-chrome-driver')
+
+  upgradeTestImplementation(project(':geode-gfsh'))
+  upgradeTestImplementation(project(':geode-logging'))
+  upgradeTestImplementation(project(':geode-serialization'))
+  upgradeTestImplementation(project(':geode-core'))
+  upgradeTestImplementation(project(':geode-dunit')) {
+    exclude module: 'geode-core'
+  }
+  upgradeTestImplementation(project(':geode-assembly:geode-assembly-test'))
+
+  upgradeTestImplementation('org.apache.httpcomponents:httpclient')
+
+  upgradeTestCompileOnly(platform(project(':boms:geode-all-bom')))
+  upgradeTestCompileOnly('io.swagger.core.v3:swagger-annotations')
+  upgradeTestRuntimeOnly(project(path: ':geode-old-versions', configuration: 'classpathsOutput'))
+  upgradeTestRuntimeOnly(project(':extensions:session-testing-war'))
+  upgradeTestRuntimeOnly('org.codehaus.cargo:cargo-core-uberjar')
+  upgradeTestRuntimeOnly files({ downloadWebServers } )
+
+  //Web servers used for session module testing
+  webServerTomcat6('apache:tomcat:' + DependencyConstraints.get('tomcat6.version') + '@zip')
+  webServerTomcat7('org.apache.tomcat:tomcat:' + DependencyConstraints.get('tomcat7.version') + '@zip')
+  webServerTomcat8('org.apache.tomcat:tomcat:' + DependencyConstraints.get('tomcat8.version') + '@zip')
+  webServerTomcat9('org.apache.tomcat:tomcat:' + DependencyConstraints.get('tomcat9.version') + '@zip')
+  webServerJetty('org.eclipse.jetty:jetty-distribution:' + DependencyConstraints.get('jetty.version') + '@zip')
+
+  gfshDependencies(project(':geode-gfsh'))
+  gfshDependencies(project(':geode-lucene'))
+  gfshDependencies(project(':geode-log4j'))
+  gfshDependencies(project(':geode-wan'))
+  gfshDependencies(project(':geode-rebalancer'))
+  gfshDependencies(project(':geode-old-client-support'))
+  gfshDependencies(project(':geode-memcached'))
+  gfshDependencies(project(':geode-cq'))
+  gfshDependencies(project(':geode-connectors'))
+
+  defaultCacheConfigClasspath(project(':geode-core'))
+  defaultCacheConfigClasspath(project(':geode-log4j'))
+
+  defaultDistributionConfigClasspath(project(':geode-core'))
+  defaultDistributionConfigClasspath(project(':geode-log4j'))
+}
+
+acceptanceTest {
+  // This is specifically used by GradleBuildWithGeodeCoreAcceptanceTest
+  systemProperty 'projectGroup', project.group
+}
+
+tasks.register('defaultDistributionConfig', JavaExec) {
+  inputs.files {
+    project(':geode-core').sourceSets.main.runtimeClasspath
+  }
+  outputs.file file("$buildDir/gemfire.properties")
+  main 'org.apache.geode.distributed.internal.DefaultPropertiesGenerator'
+  classpath configurations.defaultDistributionConfigClasspath
+  workingDir buildDir
+
+  doFirst {
+    buildDir.mkdirs()
+  }
+}
+
+tasks.register('defaultCacheConfig', JavaExec) {
+  inputs.files {
+    project(':geode-core').sourceSets.main.runtimeClasspath
+  }
+  outputs.file file("$buildDir/cache.xml")
+  main 'org.apache.geode.internal.cache.xmlcache.CacheXmlGenerator'
+  classpath configurations.defaultCacheConfigClasspath
+  workingDir buildDir
+
+  doFirst {
+    buildDir.mkdirs()
+  }
+}
+
+def getDependencyProjectsFor(String configurationName) {
+  List<Project> rval = configurations[configurationName].allDependencies.collect {
+    it.dependencyProject
+  }.collect {
+    def projs = [it]
+    if ((it as Project).pluginManager.hasPlugin('java-library')) {
+      (it as Project).configurations.api.dependencies.collect {
+        projs += it.dependencyProject
+      }
+      (it as Project).configurations.runtimeOnly.dependencies.collect {
+        projs += it.dependencyProject
+      }
+    }
+    projs
+  }.flatten().unique()
+  return rval
+}
+
+// Configure the manifest contents in a separate always-running task to ensure correctness of
+// these dependency jars
+tasks.register('depsJar', Jar) {
+  inputs.files {
+    configurations.geodeDependenciesJar
+  }
+  description 'Assembles the jar archive that defines the gemfire classpath.'
+  archiveFileName='geode-dependencies.jar'
+  doFirst {
+    manifest {
+      attributes("Class-Path": configurations.geodeDependenciesJar.files.collect {it.name}.flatten().unique().join(' '))
+    }
+  }
+}
+
+tasks.register('gfshDepsJar', Jar) {
+  inputs.files {
+    configurations.gfshDependencies
+  }
+  description 'Assembles the jar archive that defines the gfsh classpath.'
+  archiveFileName='gfsh-dependencies.jar'
+  doFirst {
+    manifest {
+      attributes("Class-Path": configurations.gfshDependencies.resolvedConfiguration.resolvedArtifacts.collect {it.file.name}.unique().join(' '))
+    }
+  }
+}
+
+tasks.register('docs', Javadoc) {
+  def docsDir = file("$buildDir/javadocs")
+  options.addStringOption('Xwerror', '-quiet')
+  options.links("https://docs.oracle.com/javase/8/docs/api/")
+  options.encoding = 'UTF-8'
+  title = "${productName} ${project.version}"
+  destinationDir = docsDir
+
+  getDependencyProjectsFor('javadocOnly').forEach() { Project proj ->
+    proj.tasks.withType(Javadoc).findAll { it.enabled }.each { javadocTask ->
+      source += javadocTask.source
+      classpath += javadocTask.classpath
+      excludes += javadocTask.excludes
+      includes += javadocTask.includes
+    }
+  }
+
+  include 'org/apache/geode/**/'
+
+  doLast {
+    rootProject.subprojects.each { project ->
+      copy {
+        if (project.hasProperty('sourceSets')) {
+          from project.sourceSets.main.resources.srcDirs
+        }
+        include 'javadoc-images/*'
+        into docsDir
+      }
+    }
+  }
+}
+
+distributions {
+  src {
+    distributionBaseName = 'apache-geode'
+    contents {
+      from rootProject.tasks.writeBuildInfo
+      from (rootDir) {
+        exclude 'KEYS'
+        exclude '**/gradlew'
+        exclude '**/gradlew.bat'
+        exclude '**/gradle/wrapper/gradle-wrapper.jar'
+        exclude '**/.gradle'
+        exclude '**/.project'
+        exclude '**/.classpath'
+        exclude '**/.settings/**'
+        exclude '**/build-eclipse/**'
+        exclude '**/.idea/**'
+        exclude '**/*.iml'
+        exclude '**/*.ipr'
+        exclude '**/*.iws'
+        exclude '**/.travis.yml'
+        exclude '**/tags'
+
+        //These directories are generated on the jenkins server by gradle
+        exclude 'caches'
+        exclude 'daemon'
+        exclude 'native'
+        exclude 'wrapper'
+
+        // These exclude the 'build' and 'out' artifact directories from Gradle and IntelliJ for each project
+        exclude { FileTreeElement details ->
+          details.directory && (details.name == "build" || details.name == "out")
+        }
+      }
+    }
+  }
+  named('main') {
+    distributionBaseName = 'apache-geode'
+    contents {
+      duplicatesStrategy 'exclude'
+      exclude '*.asc'
+
+      exclude '*.asc'
+      exclude '*-sources.jar'
+      exclude '*-javadoc.jar'
+
+      from rootProject.file('README.md')
+
+      from "${projectDir}/src/main/dist/"
+
+      with copySpec {
+        into('config')
+        from {defaultCacheConfig}
+        from {defaultDistributionConfig}
+        from {
+          (project(':geode-log4j').sourceSets.main.resources.files.find {
+            it.name == 'log4j2.xml'
+          })
+        }
+      }
+
+      with copySpec {
+        into('lib')
+        from {configurations.geodeLibdirJars}
+        from {configurations.geodeLibdirJarsDeprecated}
+        from {configurations.gfshDependencies}
+
+        //These tasks are included as closures (wrapped in {}) because gradle may evaluate
+        //this CopySpec before it evaluates the geode-core build file.
+        from {project(':geode-core').tasks.named('raJar')}
+        from {project(':geode-core').tasks.named('jcaJar')}
+
+        // dependency jars
+        from {tasks.named('depsJar')}
+        from {tasks.named('gfshDepsJar')}
+      }
+
+      with copySpec {
+        into('tools/Extensions')
+
+        from {project(':geode-web').configurations.archives.allArtifacts.files}
+        from {project(':geode-web-api').configurations.archives.allArtifacts.files}
+        from {project(':geode-web-management').configurations.archives.allArtifacts.files}
+
+        exclude '*.jar'
+      }
+
+      with copySpec {
+        into('javadoc')
+        from { docs }
+      }
+
+      with copySpec {
+        into('tools/Pulse')
+        from {project(':geode-pulse').configurations.archives.allArtifacts.files}
+      }
+
+      with copySpec {
+        into('tools/Modules')
+
+        from { project(':extensions:geode-modules-assembly').distTcServer }
+        from { project(':extensions:geode-modules-assembly').distTcServer30 }
+        from { project(':extensions:geode-modules-assembly').distTomcat }
+        from { project(':extensions:geode-modules-assembly').distAppServer }
+      }
+    }
+  }
+
+}
+// Distribution plugin does not allow configuring of the task, only the contents. So we set
+// compression and classifier here
+[
+  tasks.named('distTar'),
+  tasks.named('srcDistTar'),
+]*.configure {
+  compression Compression.GZIP
+  archiveExtension='tgz'
+  build.dependsOn(it)
+}
+// Make build final task to generate all test and product resources
+build.dependsOn(installDist)
+
+tasks.named('srcDistTar').configure {
+  classifier 'src'
+}
+
+[
+  tasks.named('distZip'),
+  tasks.named('srcDistZip'),
+  tasks.named('dockerfileZip'),
+]*.configure {
+  enabled = false
+}
+
+tasks.withType(Test) {
+  dependsOn installDist
+  environment 'GEODE_HOME', "$buildDir/install/${distributions.main.distributionBaseName.get()}"
+}
+
+
+acceptanceTest.dependsOn(rootProject.getTasksByName("publishToMavenLocal", true))
+installDist.dependsOn ':extensions:geode-modules-assembly:dist'
+distributedTest.dependsOn ':extensions:session-testing-war:war'
+upgradeTest.dependsOn ':extensions:session-testing-war:war'
+
+/**Print the names of all jar files in a fileTree */
+def printJars(tree) {
+  tree.matching {include("**/*.jar")}.visit{ file ->
+    if(!file.isDirectory()) {
+      println file.name
+    }
+  }
+}
+
+task dumpInstalledJars(dependsOn: installDist) {
+  doLast {
+    description "Dump a list of all of the jars shipped with the binary distribution, for validation purposes"
+
+    FileTree installDir = fileTree(dir: installDist.destinationDir)
+
+    println("Jars in the binary install")
+    println("==========================")
+    printJars(installDir)
+
+    installDir.include("**/*.war").visit{ file ->
+      if(!file.isDirectory()) {
+        FileTree warContents = zipTree(file.file)
+        println ""
+        println file.name
+        println("==========================")
+        printJars(warContents)
+      }
+    }
+  }
+}
+
+docker {
+  dependsOn(tasks.installDist)
+  name geodeDockerImageName
+  copySpec.from(tasks.installDist.outputs).into('geode')
+}
+
+acceptanceTest {
+  if (!Os.isFamily(Os.FAMILY_WINDOWS)) {
+    dependsOn(tasks.docker)
+  }
+}

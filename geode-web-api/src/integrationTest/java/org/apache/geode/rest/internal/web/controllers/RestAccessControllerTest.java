@@ -1,0 +1,1467 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more contributor license
+ * agreements. See the NOTICE file distributed with this work for additional information regarding
+ * copyright ownership. The ASF licenses this file to You under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance with the License. You may obtain a
+ * copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License
+ * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+ * or implied. See the License for the specific language governing permissions and limitations under
+ * the License.
+ */
+package org.apache.geode.rest.internal.web.controllers;
+
+import static org.apache.geode.cache.Region.SEPARATOR;
+import static org.apache.geode.test.matchers.JsonEquivalence.jsonEquals;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.CoreMatchers.containsString;
+import static org.hamcrest.Matchers.contains;
+import static org.hamcrest.Matchers.containsInAnyOrder;
+import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.startsWith;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.head;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import java.io.UnsupportedEncodingException;
+import java.net.URL;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+import java.util.stream.IntStream;
+
+import com.jayway.jsonpath.JsonPath;
+import org.junit.Before;
+import org.junit.BeforeClass;
+import org.junit.ClassRule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.security.test.context.support.WithMockUser;
+import org.springframework.test.context.ContextConfiguration;
+import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
+import org.springframework.test.context.web.GenericXmlWebContextLoader;
+import org.springframework.test.context.web.WebAppConfiguration;
+import org.springframework.test.context.web.WebMergedContextConfiguration;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.web.context.WebApplicationContext;
+import org.springframework.web.context.support.GenericWebApplicationContext;
+
+import org.apache.geode.cache.CacheLoader;
+import org.apache.geode.cache.CacheWriter;
+import org.apache.geode.cache.CacheWriterException;
+import org.apache.geode.cache.Declarable;
+import org.apache.geode.cache.EntryEvent;
+import org.apache.geode.cache.LoaderHelper;
+import org.apache.geode.cache.Region;
+import org.apache.geode.cache.RegionDestroyedException;
+import org.apache.geode.cache.RegionEvent;
+import org.apache.geode.cache.RegionShortcut;
+import org.apache.geode.cache.TimeoutException;
+import org.apache.geode.cache.execute.FunctionService;
+import org.apache.geode.cache.internal.HttpService;
+import org.apache.geode.management.internal.RestAgent;
+import org.apache.geode.pdx.PdxInstance;
+import org.apache.geode.test.junit.rules.ServerStarterRule;
+
+@RunWith(SpringJUnit4ClassRunner.class)
+@ContextConfiguration(locations = {"classpath*:WEB-INF/geode-servlet.xml"},
+    loader = TestContextLoader.class)
+@WebAppConfiguration
+public class RestAccessControllerTest {
+
+  private static final String BASE_URL = "http://localhost/v1";
+
+  private static final String ORDER1_JSON = "order1.json";
+  private static final String ORDER1_ARRAY_JSON = "order1-array.json";
+  private static final String ORDER1_NO_TYPE_JSON = "order1-no-type.json";
+  private static final String ORDER2_JSON = "order2.json";
+  private static final String ORDER2_UPDATED_JSON = "order2-updated.json";
+  private static final String MALFORMED_JSON = "malformed.json";
+  private static final String CUSTOMER_LIST_JSON = "customer-list.json";
+  private static final String CUSTOMER_LIST_NO_TYPE_JSON = "customer-list-no-type.json";
+  private static final String ORDER_CAS_JSON = "order-cas.json";
+  private static final String ORDER_CAS_OLD_JSON = "order-cas-old.json";
+  private static final String ORDER_CAS_NEW_JSON = "order-cas-new.json";
+  private static final String ORDER_CAS_WRONG_OLD_JSON = "order-cas-wrong-old.json";
+  private static final String CUSTOMER_CONTAINING_NON_ASCII_JSON =
+      "customer-containing-non-ascii.json";
+  private static final String CUSTOMER_CONTAINING_NON_ASCII_QUERY_FULL_RESULT_JSON =
+      "customer-containing-non-ascii-query-full-result.json";
+  private static final String CUSTOMER_CONTAINING_NON_ASCII_QUERY_STRUCT_RESULT_JSON =
+      "customer-containing-non-ascii-query-struct-result.json";
+
+  private static final String KEY_PREFIX = "/?+ @&./";
+  private static final String KEY_SUFFIX = "/?+ @&./";
+
+  private static final Map<String, String> jsonResources = new HashMap<>();
+
+  private static final RequestPostProcessor POST_PROCESSOR = new StandardRequestPostProcessor();
+
+  private MockMvc mockMvc;
+
+  private static Region<?, ?> orderRegion;
+  private static Region<String, PdxInstance> customerRegion;
+
+  private static String createKey(int keyNumber) {
+    return KEY_PREFIX + "KEY" + keyNumber + KEY_SUFFIX;
+  }
+
+  private static String createEncodedKey(int keyNumber) {
+    return encodeKey(createKey(keyNumber));
+  }
+
+  private static String encodeKey(String key) {
+    try {
+      return URLEncoder.encode(key, "UTF-8");
+    } catch (UnsupportedEncodingException e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
+  @ClassRule
+  public static ServerStarterRule rule = new ServerStarterRule()
+      .withProperty("log-level", "warn")
+      .withPDXReadSerialized()
+      .withRegion(RegionShortcut.REPLICATE, "customers")
+      .withRegion(RegionShortcut.REPLICATE, "orders");
+
+  @Autowired
+  private WebApplicationContext webApplicationContext;
+
+  @BeforeClass
+  public static void setupCClass() throws Exception {
+    loadResource(ORDER1_JSON);
+    loadResource(ORDER1_ARRAY_JSON);
+    loadResource(ORDER1_NO_TYPE_JSON);
+    loadResource(ORDER2_JSON);
+    loadResource(MALFORMED_JSON);
+    loadResource(CUSTOMER_LIST_JSON);
+    loadResource(CUSTOMER_LIST_NO_TYPE_JSON);
+    loadResource(ORDER2_UPDATED_JSON);
+    loadResource(ORDER_CAS_JSON);
+    loadResource(ORDER_CAS_OLD_JSON);
+    loadResource(ORDER_CAS_NEW_JSON);
+    loadResource(ORDER_CAS_WRONG_OLD_JSON);
+    loadResource(CUSTOMER_CONTAINING_NON_ASCII_JSON);
+    loadResource(CUSTOMER_CONTAINING_NON_ASCII_QUERY_FULL_RESULT_JSON);
+    loadResource(CUSTOMER_CONTAINING_NON_ASCII_QUERY_STRUCT_RESULT_JSON);
+
+    RestAgent.createParameterizedQueryRegion();
+
+    FunctionService.registerFunction(new AddFreeItemToOrders());
+    FunctionService.registerFunction(new EchoArgumentFunction());
+    FunctionService.registerFunction(new GetOrderDescriptionFunction());
+
+
+    rule.createRegion(RegionShortcut.REPLICATE_PROXY, "empty",
+        f -> f.setCacheLoader(new SimpleCacheLoader()).setCacheWriter(new SimpleCacheWriter()));
+
+    customerRegion = rule.getCache().getRegion("customers");
+    orderRegion = rule.getCache().getRegion("orders");
+  }
+
+  private static void loadResource(String name) throws Exception {
+    URL orderCasJson = RestAccessControllerTest.class.getResource(name);
+    jsonResources.put(name, new String(Files.readAllBytes(Paths.get(orderCasJson.toURI()))));
+  }
+
+  @Before
+  public void setup() {
+    mockMvc = MockMvcBuilders.webAppContextSetup(webApplicationContext).build();
+
+    customerRegion.clear();
+    orderRegion.clear();
+  }
+
+  @Test
+  @WithMockUser
+  public void postEntry() throws Exception {
+    mockMvc.perform(post("/v1/orders?key=1")
+        .content(jsonResources.get(ORDER1_JSON))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isCreated())
+        .andExpect(content().string(""))
+        .andExpect(header().string("Location", BASE_URL + "/orders/1"));
+
+    mockMvc.perform(post("/v1/orders?key=1")
+        .content(jsonResources.get(ORDER1_JSON))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isConflict())
+        .andExpect(content().json(jsonResources.get(ORDER1_JSON)));
+
+    Order order = (Order) ((PdxInstance) orderRegion.get("1")).getObject();
+    assertThat(order).as("order should not be null").isNotNull();
+  }
+
+  @Test
+  @WithMockUser
+  public void postEntryWithSlashKey() throws Exception {
+    String decodedKey = createKey(1);
+    String encodedKey = encodeKey(decodedKey);
+    mockMvc.perform(put("/v1/orders?op=CREATE&keys=" + encodedKey)
+        .content(jsonResources.get(ORDER1_JSON))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isCreated())
+        .andExpect(content().string(""))
+        .andExpect(header().string("Location", BASE_URL + "/orders?keys=" + encodedKey));
+
+    mockMvc.perform(put("/v1/orders?op=CREATE&keys=" + encodedKey)
+        .content(jsonResources.get(ORDER1_JSON))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isConflict())
+        .andExpect(content().json(jsonResources.get(ORDER1_JSON)))
+        .andExpect(header().string("Location", BASE_URL + "/orders?keys=" + encodedKey));
+
+    Order order = (Order) ((PdxInstance) orderRegion.get(decodedKey)).getObject();
+    assertThat(order).as("order should not be null").isNotNull();
+  }
+
+  @Test
+  @WithMockUser
+  public void postEntryWithJsonArrayOfOrders() throws Exception {
+    mockMvc.perform(post("/v1/orders?key=1")
+        .content(jsonResources.get(ORDER1_ARRAY_JSON))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isCreated())
+        .andExpect(content().string(""))
+        .andExpect(header().string("Location", BASE_URL + "/orders/1"));
+
+    mockMvc.perform(post("/v1/orders?key=1")
+        .content(jsonResources.get(ORDER1_ARRAY_JSON))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isConflict())
+        .andExpect(content().json(jsonResources.get(ORDER1_ARRAY_JSON)));
+
+    @SuppressWarnings("unchecked")
+    List<PdxInstance> entries = (List<PdxInstance>) orderRegion.get("1");
+    Order order = (Order) entries.get(0).getObject();
+    assertThat(order).as("order should not be null").isNotNull();
+  }
+
+  @Test
+  @WithMockUser
+  public void createEntryWithJsonArrayOfOrdersWithEncodedKey() throws Exception {
+    String decodedKey = createKey(1);
+    String encodedKey = encodeKey(decodedKey);
+    mockMvc.perform(put("/v1/orders?op=CREATE&keys=" + encodedKey)
+        .content(jsonResources.get(ORDER1_ARRAY_JSON))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isCreated())
+        .andExpect(content().string(""))
+        .andExpect(header().string("Location", BASE_URL + "/orders?keys=" + encodedKey));
+
+    mockMvc.perform(put("/v1/orders?op=CREATE&keys=" + encodedKey)
+        .content(jsonResources.get(ORDER1_ARRAY_JSON))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isConflict())
+        .andExpect(content().json(jsonResources.get(ORDER1_ARRAY_JSON)))
+        .andExpect(header().string("Location", BASE_URL + "/orders?keys=" + encodedKey));
+
+    @SuppressWarnings("unchecked")
+    List<PdxInstance> entries = (List<PdxInstance>) orderRegion.get(decodedKey);
+    Order order = (Order) entries.get(0).getObject();
+    assertThat(order).as("order should not be null").isNotNull();
+  }
+
+  @Test
+  @WithMockUser
+  public void failPostEntryWithInvalidJson() throws Exception {
+    mockMvc.perform(post("/v1/orders?key=1")
+        .content(jsonResources.get(MALFORMED_JSON))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isBadRequest())
+        .andExpect(
+            jsonPath("$.cause", is("Json doc specified is either not supported or invalid!")));
+  }
+
+  @Test
+  @WithMockUser
+  public void failPostEntryWithInvalidRegion() throws Exception {
+    mockMvc.perform(post("/v1/unknown?key=1")
+        .content(jsonResources.get(ORDER1_JSON))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isNotFound())
+        .andExpect(
+            jsonPath("$.cause", is("The Region identified by name (unknown) could not be found!")));
+  }
+
+  @Test
+  @WithMockUser
+  public void failPostEntryOnRegionWithDataPolicyEmpty() throws Exception {
+    mockMvc.perform(post("/v1/empty?key=1")
+        .content(jsonResources.get(ORDER1_JSON))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isInternalServerError())
+        .andExpect(
+            jsonPath("$.message",
+                is("Resource (empty) configuration does not support the requested operation!")));
+  }
+
+  @Test
+  @WithMockUser
+  public void failGettingEntryFromUnknownRegion() throws Exception {
+    mockMvc.perform(get("/v1/unknown/10")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isNotFound())
+        .andExpect(
+            jsonPath("$.cause", is("The Region identified by name (unknown) could not be found!")));
+  }
+
+  @Test
+  @WithMockUser
+  public void failGettingEntryWhenCacheLoaderFails() throws Exception {
+    mockMvc.perform(get("/v1/empty/10")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isInternalServerError())
+        .andExpect(
+            jsonPath("$.message",
+                is("Server has encountered timeout error while processing this request!")));
+  }
+
+  @Test
+  @WithMockUser
+  public void putEntry() throws Exception {
+    putAndVerifyCustomer("/v1/orders/2", ORDER2_JSON, "/orders/2");
+    putAndVerifyCustomer("/v1/orders/2", ORDER2_JSON, "/orders/2");
+  }
+
+  @Test
+  @WithMockUser
+  public void failPutEntryWithInvalidJson() throws Exception {
+    mockMvc.perform(put("/v1/orders/1")
+        .content(jsonResources.get(MALFORMED_JSON))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isBadRequest())
+        .andExpect(
+            jsonPath("$.cause", is("Json doc specified is either not supported or invalid!")));
+  }
+
+  @Test
+  @WithMockUser
+  public void failPutEntryWithInvalidRegion() throws Exception {
+    mockMvc.perform(put("/v1/unknown/1")
+        .content(jsonResources.get(ORDER1_JSON))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isNotFound())
+        .andExpect(
+            jsonPath("$.cause", is("The Region identified by name (unknown) could not be found!")));
+  }
+
+  @Test
+  @WithMockUser
+  public void failPutEntryOnRegionWhenCacheWriterFails() throws Exception {
+    mockMvc.perform(put("/v1/empty/1")
+        .content(jsonResources.get(ORDER1_JSON))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isInternalServerError())
+        .andExpect(
+            jsonPath("$.message",
+                is("Server has encountered CacheWriter error while processing this request!")));
+  }
+
+  @Test
+  @WithMockUser
+  public void putAll() throws Exception {
+    StringBuilder keysBuilder = new StringBuilder();
+    for (int i = 1; i < 60; i++) {
+      keysBuilder.append(i).append(',');
+    }
+    keysBuilder.append(60);
+    String keys = keysBuilder.toString();
+    mockMvc.perform(
+        put("/v1/customers/" + keys)
+            .content(jsonResources.get(CUSTOMER_LIST_JSON))
+            .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(header().string("Location", BASE_URL + "/customers/" + keys));
+    assertThat(customerRegion).hasSize(60);
+    for (int i = 1; i <= 60; i++) {
+      PdxInstance customer = customerRegion.get(String.valueOf(i));
+      assertThat(customer.getField("customerId").toString())
+          .isEqualTo(Integer.valueOf(100 + i).toString());
+    }
+  }
+
+  @Test
+  @WithMockUser
+  public void putAllWithQueryParam() throws Exception {
+    StringBuilder keysBuilder = new StringBuilder();
+    for (int i = 1; i < 60; i++) {
+      keysBuilder.append(i).append(',');
+    }
+    keysBuilder.append(60);
+    String keys = keysBuilder.toString();
+    mockMvc.perform(
+        put("/v1/customers?keys=" + keys)
+            .content(jsonResources.get(CUSTOMER_LIST_JSON))
+            .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(header().string("Location", BASE_URL + "/customers?keys=" + keys));
+    assertThat(customerRegion).hasSize(60);
+    for (int i = 1; i <= 60; i++) {
+      PdxInstance customer = customerRegion.get(String.valueOf(i));
+      assertThat(customer.getField("customerId").toString())
+          .isEqualTo(Integer.valueOf(100 + i).toString());
+    }
+  }
+
+  @Test
+  @WithMockUser
+  public void putMultipleEncodedKeys() throws Exception {
+    StringBuilder keysBuilder = new StringBuilder();
+    for (int i = 1; i < 60; i++) {
+      keysBuilder.append(createEncodedKey(i)).append(',');
+    }
+    keysBuilder.append(createEncodedKey(60));
+    String keys = keysBuilder.toString();
+    mockMvc.perform(
+        put("/v1/customers?keys=" + keys)
+            .content(jsonResources.get(CUSTOMER_LIST_JSON))
+            .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(header().string("Location", BASE_URL + "/customers?keys=" + keys));
+    assertThat(customerRegion).hasSize(60);
+    for (int i = 1; i <= 60; i++) {
+      PdxInstance customer = customerRegion.get(createKey(i));
+      assertThat(customer.getField("customerId").toString())
+          .isEqualTo(Integer.valueOf(100 + i).toString());
+    }
+  }
+
+  @Test
+  @WithMockUser
+  public void putSingleEncodedKey() throws Exception {
+    String decodedKey = createKey(32);
+    String encodedKey = encodeKey(decodedKey);
+
+    mockMvc.perform(
+        put("/v1/orders?keys=" + encodedKey)
+            .content(jsonResources.get(ORDER2_JSON))
+            .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(header().string("Location", BASE_URL + "/orders?keys=" + encodedKey));
+
+    assertThat(orderRegion).hasSize(1);
+    assertThat(orderRegion.containsKey(decodedKey)).isTrue();
+    Order order = (Order) ((PdxInstance) orderRegion.get(decodedKey)).getObject();
+    assertThat(order.getPurchaseOrderNo()).isEqualTo(112);
+    assertThat(order.getCustomerId()).isEqualTo(102);
+  }
+
+  @Test
+  @WithMockUser
+  public void failPutAllWithInvalidJson() throws Exception {
+    mockMvc.perform(put("/v1/customers/1,2,3,4")
+        .content(jsonResources.get(MALFORMED_JSON))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.cause", is("JSON document specified in the request is incorrect")));
+  }
+
+  @Test
+  @WithMockUser
+  public void failPutWithInvalidOp() throws Exception {
+    mockMvc.perform(put("/v1/orders/1?op=BOGUS")
+        .content(jsonResources.get(ORDER1_JSON))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isBadRequest())
+        .andExpect(
+            jsonPath("$.cause", is(
+                "The op parameter (BOGUS) is not valid. Valid values are PUT, REPLACE, or CAS.")));
+  }
+
+  @Test
+  @WithMockUser
+  public void failPutWithKeyParamWithInvalidOp() throws Exception {
+    mockMvc.perform(put("/v1/orders?op=BOGUS&keys=1")
+        .content(jsonResources.get(ORDER1_JSON))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isBadRequest())
+        .andExpect(
+            jsonPath("$.cause", is(
+                "The op parameter (BOGUS) is not valid. Valid values are PUT, CREATE, REPLACE, or CAS.")));
+  }
+
+  @Test
+  @WithMockUser
+  public void failPutAllWithInvalidRegion() throws Exception {
+    mockMvc.perform(
+        put("/v1/unknown/1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60")
+            .content(jsonResources.get(CUSTOMER_LIST_JSON))
+            .with(POST_PROCESSOR))
+        .andExpect(status().isNotFound())
+        .andExpect(
+            jsonPath("$.cause", is("The Region identified by name (unknown) could not be found!")));
+  }
+
+  @Test
+  @WithMockUser
+  public void failPutAllWhenCacheWriterFails() throws Exception {
+    mockMvc.perform(
+        put("/v1/empty/1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60")
+            .content(jsonResources.get(CUSTOMER_LIST_JSON))
+            .with(POST_PROCESSOR))
+        .andExpect(status().isInternalServerError())
+        .andExpect(
+            jsonPath("$.cause", is("Put request failed as gemfire has thrown an error.")));
+  }
+
+  @Test
+  @WithMockUser
+  public void putWithReplace() throws Exception {
+    // First time through the key does not exist and we get a 404
+    mockMvc.perform(put("/v1/orders/2?op=REPLACE")
+        .content(jsonResources.get(ORDER2_UPDATED_JSON))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isNotFound());
+
+    // Create an entry that we can subsequently update
+    putAndVerifyCustomer("/v1/orders/2", ORDER2_JSON, "/orders/2");
+
+    // Do the actual update
+    putAndVerifyCustomer("/v1/orders/2?op=REPLACE", ORDER2_UPDATED_JSON, "/orders/2");
+
+    // Check the updated value
+    mockMvc.perform(get("/v1/orders/2")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(content().json(jsonResources.get(ORDER2_UPDATED_JSON)));
+  }
+
+  @Test
+  @WithMockUser
+  public void failPutWithReplaceWithInvalidJson() throws Exception {
+    mockMvc.perform(put("/v1/orders/1?op=REPLACE")
+        .content(jsonResources.get(MALFORMED_JSON))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isBadRequest())
+        .andExpect(
+            jsonPath("$.cause", is("Json doc specified is either not supported or invalid!")));
+  }
+
+  @Test
+  @WithMockUser
+  public void failPutWithReplaceWithInvalidRegion() throws Exception {
+    mockMvc.perform(put("/v1/unknown/1?op=REPLACE")
+        .content(jsonResources.get(ORDER1_JSON))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isNotFound())
+        .andExpect(
+            jsonPath("$.cause", is("The Region identified by name (unknown) could not be found!")));
+  }
+
+  @Test
+  @WithMockUser
+  public void failPutWithReplaceFailsOnEmptyRegion() throws Exception {
+    mockMvc.perform(put("/v1/empty/10?op=REPLACE")
+        .content(jsonResources.get(ORDER1_JSON))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isInternalServerError())
+        .andExpect(
+            jsonPath("$.message",
+                is("Resource (empty) configuration does not support the requested operation!")));
+  }
+
+  @Test
+  @WithMockUser
+  public void putWithCas() throws Exception {
+    // First time through the key does not exist and we get a 404
+    putAndVerifyCustomer("/v1/orders/3?op=CAS", ORDER_CAS_JSON, "/orders/3");
+
+    // Create an entry that we can subsequently update
+    putAndVerifyCustomer("/v1/orders/3", ORDER_CAS_OLD_JSON, "/orders/3");
+
+    // Check the value
+    mockMvc.perform(get("/v1/orders/3")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(content().json(jsonResources.get(ORDER_CAS_OLD_JSON)));
+
+    // Try and update with an incorrect old value
+    mockMvc.perform(put("/v1/orders/3?op=CAS")
+        .content(jsonResources.get(ORDER_CAS_WRONG_OLD_JSON))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isConflict())
+        .andExpect(header().string("Location", BASE_URL
+            + "/orders/3"))
+        .andExpect(content().json(jsonResources.get(ORDER_CAS_OLD_JSON)));
+
+    // Check that the value has not changed
+    mockMvc.perform(get("/v1/orders/3")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(content().json(jsonResources.get(ORDER_CAS_OLD_JSON)));
+
+    // Do the actual update
+    putAndVerifyCustomer("/v1/orders/3?op=CAS", ORDER_CAS_JSON, "/orders/3");
+
+    // Check the updated value
+    mockMvc.perform(get("/v1/orders/3")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(content().json(jsonResources.get(ORDER_CAS_NEW_JSON)));
+  }
+
+  @Test
+  @WithMockUser
+  public void failPutWithCasWithInvalidJson() throws Exception {
+    mockMvc.perform(put("/v1/orders/1?op=CAS")
+        .content(jsonResources.get(MALFORMED_JSON))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isBadRequest())
+        .andExpect(
+            jsonPath("$.cause", is("Json doc specified in request body is invalid!")));
+  }
+
+  @Test
+  @WithMockUser
+  public void failPutWithCasWithInvalidRegion() throws Exception {
+    mockMvc.perform(put("/v1/unknown/10?op=CAS")
+        .content(jsonResources.get(ORDER_CAS_JSON))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isNotFound())
+        .andExpect(
+            jsonPath("$.cause", is("The Region identified by name (unknown) could not be found!")));
+  }
+
+  @Test
+  @WithMockUser
+  public void failPutWithCasFailsOnEmptyRegion() throws Exception {
+    mockMvc.perform(put("/v1/empty/10?op=CAS")
+        .content(jsonResources.get(ORDER_CAS_JSON))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isInternalServerError())
+        .andExpect(
+            jsonPath("$.message",
+                is("Resource (empty) configuration does not support the requested operation!")));
+  }
+
+  @Test
+  @WithMockUser
+  public void getRegions() throws Exception {
+    mockMvc.perform(get("/v1")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(
+            jsonPath("$.regions[*].name", containsInAnyOrder("customers", "orders", "empty")))
+        .andExpect(
+            jsonPath("$.regions[*].type", containsInAnyOrder("REPLICATE", "REPLICATE", "EMPTY")));
+  }
+
+  @Test
+  @WithMockUser
+  public void postRegions() throws Exception {
+    mockMvc.perform(post("/v1")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isMethodNotAllowed())
+        .andExpect(jsonPath("$.cause", is("Request method 'POST' not supported")));
+  }
+
+  @SuppressWarnings("unchecked")
+  @Test
+  @WithMockUser
+  public void getAllCustomers() throws Exception {
+    putAll();
+    mockMvc.perform(get("/v1/customers?limit=ALL")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(header().string("Content-Location", startsWith(BASE_URL + "/customers/")))
+        .andExpect(jsonPath("$.customers", jsonEquals(jsonResources.get(CUSTOMER_LIST_JSON))));
+  }
+
+  @Test
+  @WithMockUser
+  public void getFromInvalidRegion() throws Exception {
+    putAll();
+    mockMvc.perform(get("/v1/unknown")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isNotFound())
+        .andExpect(
+            jsonPath("$.cause", is("The Region identified by name (unknown) could not be found!")));
+  }
+
+  @Test
+  @WithMockUser
+  public void getCustomersWithLimit() throws Exception {
+    putAll();
+    mockMvc.perform(get("/v1/customers?limit=10")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(header().string("Content-Location", startsWith(BASE_URL + "/customers/")))
+        .andExpect(jsonPath("$.customers.length()", is(10)));
+  }
+
+  @Test
+  @WithMockUser
+  public void getCustomersWithLimitOverRegionSize() throws Exception {
+    putAll();
+    mockMvc.perform(get("/v1/customers?limit=70")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(
+            header().string("Content-Location", startsWith(BASE_URL + "/customers/")))
+        .andExpect(jsonPath("$.customers.length()", is(60)));
+  }
+
+  @Test
+  @WithMockUser
+  public void getCustomersWithBogusLimitFails() throws Exception {
+    putAll();
+    mockMvc.perform(get("/v1/customers?limit=bogus")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isBadRequest())
+        .andExpect(
+            jsonPath("$.cause", is("limit param (bogus) is not valid!")));
+  }
+
+  @Test
+  @WithMockUser
+  public void getCustomersWithNegativeLimitFails() throws Exception {
+    putAll();
+    mockMvc.perform(get("/v1/customers?limit=-2")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isBadRequest())
+        .andExpect(
+            jsonPath("$.cause", is("Negative limit param (-2) is not valid!")));
+  }
+
+  @Test
+  @WithMockUser
+  public void getAllKeys() throws Exception {
+    putAll();
+    mockMvc.perform(get("/v1/customers/keys")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.keys",
+            containsInAnyOrder(IntStream.rangeClosed(1, 60).mapToObj(i -> i + "").toArray())));
+  }
+
+  @Test
+  @WithMockUser
+  public void getAllKeysFromInvalidRegion() throws Exception {
+    mockMvc.perform(get("/v1/unknown/keys")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isNotFound())
+        .andExpect(
+            jsonPath("$.cause", is("The Region identified by name (unknown) could not be found!")));
+  }
+
+  @Test
+  @WithMockUser
+  public void failPostAllKeys() throws Exception {
+    mockMvc.perform(post("/v1/unknown/keys")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isMethodNotAllowed())
+        .andExpect(jsonPath("$.cause", is("Request method 'POST' not supported")));
+  }
+
+  @Test
+  @WithMockUser
+  public void getSpecificKey() throws Exception {
+    putAll();
+    mockMvc.perform(get("/v1/customers/1")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(header().string("Content-Location", BASE_URL + "/customers/1"))
+        .andExpect(
+            jsonPath("$.customerId", equalTo(101)));
+  }
+
+  @Test
+  @WithMockUser
+  public void getSpecificKeys() throws Exception {
+    putAll();
+    mockMvc.perform(get("/v1/customers/1,2,3,4,5?ignoreMissingKey=false")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(header().string("Content-Location", BASE_URL + "/customers/1,2,3,4,5"))
+        .andExpect(
+            jsonPath("$.customers[*].customerId", contains(101, 102, 103, 104, 105)));
+  }
+
+  @Test
+  @WithMockUser
+  public void getSpecificKeyUsingQueryParam() throws Exception {
+    putAll();
+    mockMvc.perform(get("/v1/customers?keys=1")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(header().string("Content-Location", BASE_URL + "/customers?keys=1"))
+        .andExpect(
+            jsonPath("$.customerId", equalTo(101)));
+  }
+
+  @Test
+  @WithMockUser
+  public void getSpecificKeysUsingQueryParam() throws Exception {
+    putAll();
+    mockMvc.perform(get("/v1/customers?keys=5,4,3,2,1&ignoreMissingKey=false")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(header().string("Content-Location", BASE_URL + "/customers?keys=5,4,3,2,1"))
+        .andExpect(
+            jsonPath("$.customers[*].customerId", contains(105, 104, 103, 102, 101)));
+  }
+
+  @Test
+  @WithMockUser
+  public void getSpecificNonExistentKeyFails() throws Exception {
+    mockMvc.perform(get("/v1/customers?keys=nonExistentKey")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isNotFound())
+        .andExpect(jsonPath("$.cause",
+            is("Key (nonExistentKey) does not exist for region (customers) in cache!")));
+  }
+
+  @Test
+  @WithMockUser
+  public void getSpecificNonExistentKeyWithIgnoreMissingKeyStillFails() throws Exception {
+    // ignoreMissingKey=true ignored when single key is given
+    mockMvc.perform(get("/v1/customers?keys=nonExistentKey&ignoreMissingKey=true")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isNotFound())
+        .andExpect(
+            jsonPath("$.cause",
+                is("Key (nonExistentKey) does not exist for region (customers) in cache!")));
+  }
+
+  @Test
+  @WithMockUser
+  public void getSpecificKeysUsingQueryParamWithNonExistentKey() throws Exception {
+    putAll();
+    mockMvc.perform(get("/v1/customers?keys=1,doesNotExist&ignoreMissingKey=true")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(header().string("Content-Location", BASE_URL + "/customers?keys=1,doesNotExist"))
+        .andExpect(jsonPath("$.customers.length()").value(2))
+        .andExpect(jsonPath("$.customers.[0].@type")
+            .value("org.apache.geode.rest.internal.web.controllers.Customer"))
+        .andExpect(jsonPath("$.customers.[0].customerId").value(101))
+        .andExpect(jsonPath("$.customers.[0].firstName").value("Vishal"))
+        .andExpect(jsonPath("$.customers.[0].lastName").value("Roa"))
+        .andExpect(jsonPath("$.customers.[1]").isEmpty());
+  }
+
+  @Test
+  @WithMockUser
+  public void getSpecificKeysUsingQueryParamWithNonExistentKeyFailsWhenNotIgnoring()
+      throws Exception {
+    putAll();
+    mockMvc.perform(get("/v1/customers?keys=1,doesNotExist,doesNotExist2&ignoreMissingKey=false")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isBadRequest())
+        .andExpect(
+            jsonPath("$.cause",
+                is("Requested keys (doesNotExist,doesNotExist2) do not exist in region (customers)")));
+  }
+
+  @Test
+  @WithMockUser
+  public void getSpecificKeysUsingQueryParamWithNonExistentKeyFailsWithBogusIgnoringValue()
+      throws Exception {
+    putAll();
+    mockMvc.perform(get("/v1/customers?keys=1,doesNotExist,doesNotExist2&ignoreMissingKey=bogus")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isBadRequest())
+        .andExpect(
+            jsonPath("$.cause", is(
+                "ignoreMissingKey param (bogus) is not valid. valid usage is ignoreMissingKey=true!")));
+  }
+
+  @Test
+  @WithMockUser
+  public void getSpecificKeysFromUnknownRegion() throws Exception {
+    mockMvc.perform(get("/v1/unknown/1,2,3,4,5")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isNotFound())
+        .andExpect(
+            jsonPath("$.cause", is("The Region identified by name (unknown) could not be found!")));
+  }
+
+  @Test
+  @WithMockUser
+  public void deleteSingleKey() throws Exception {
+    putAll();
+    mockMvc.perform(delete("/v1/customers/1")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk());
+  }
+
+  @Test
+  @WithMockUser
+  public void deleteFromInvalidRegion() throws Exception {
+    mockMvc.perform(delete("/v1/unknown/1")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isNotFound());
+  }
+
+  @Test
+  @WithMockUser
+  public void deleteMultipleKeys() throws Exception {
+    putAll();
+    mockMvc.perform(delete("/v1/customers/2,3,4,5")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk());
+  }
+
+  @Test
+  @WithMockUser
+  public void deleteMultipleKeysWithQueryParam() throws Exception {
+    putAll();
+    mockMvc.perform(delete("/v1/customers?keys=2,3,4,5")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk());
+    assertThat(customerRegion).hasSize(60 - 4);
+    assertThat(customerRegion.containsKey("2")).isFalse();
+    assertThat(customerRegion.containsKey("3")).isFalse();
+    assertThat(customerRegion.containsKey("4")).isFalse();
+    assertThat(customerRegion.containsKey("5")).isFalse();
+  }
+
+  @Test
+  @WithMockUser
+  public void getMultipleEncodedKeys() throws Exception {
+    putMultipleEncodedKeys();
+    StringBuilder keyBuilder = new StringBuilder();
+    for (int i = 2; i <= 5; i++) {
+      keyBuilder.append(createEncodedKey(i));
+      if (i != 5) {
+        keyBuilder.append(',');
+      }
+    }
+    String keys = keyBuilder.toString();
+    mockMvc.perform(get("/v1/customers?keys=" + keys)
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(header().string("Content-Location", BASE_URL + "/customers?keys=" + keys))
+        .andExpect(
+            jsonPath("$.customers[*].customerId", contains(102, 103, 104, 105)));
+
+  }
+
+  @Test
+  @WithMockUser
+  public void getSingleEncodedKey() throws Exception {
+    putMultipleEncodedKeys();
+    String keys = createEncodedKey(7);
+    mockMvc.perform(get("/v1/customers?keys=" + keys)
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(header().string("Content-Location", BASE_URL + "/customers?keys=" + keys))
+        .andExpect(
+            jsonPath("$.customerId", equalTo(107)));
+  }
+
+  @Test
+  @WithMockUser
+  public void deleteMultipleEncodedKeys() throws Exception {
+    putMultipleEncodedKeys();
+    StringBuilder keyBuilder = new StringBuilder();
+    for (int i = 2; i <= 5; i++) {
+      keyBuilder.append(createEncodedKey(i));
+      if (i != 5) {
+        keyBuilder.append(',');
+      }
+    }
+    String keys = keyBuilder.toString();
+    mockMvc.perform(delete("/v1/customers?keys=" + keys)
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk());
+    assertThat(customerRegion).hasSize(60 - 4);
+    for (int i = 2; i <= 5; i++) {
+      assertThat(customerRegion.containsKey(createKey(i))).isFalse();
+    }
+  }
+
+  @Test
+  @WithMockUser
+  public void deleteAllKeys() throws Exception {
+    putAll();
+    mockMvc.perform(delete("/v1/customers")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk());
+
+    mockMvc.perform(head("/v1/customers")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(header().string("Resource-Count", "0"));
+  }
+
+  @Test
+  @WithMockUser
+  public void deleteMultipleKeysFromInvalidRegion() throws Exception {
+    mockMvc.perform(delete("/v1/unknown/2,3,4,5")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isNotFound());
+  }
+
+  @Test
+  @WithMockUser
+  public void deleteMultipleKeysFromEmptyRegion() throws Exception {
+    mockMvc.perform(delete("/v1/empty/2,3,4,5")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isNotFound());
+  }
+
+  @Test
+  @WithMockUser
+  public void createQueries() throws Exception {
+    deleteAllQueries();
+
+    mockMvc.perform(post(
+        "/v1/queries?id=selectOrder&q=SELECT DISTINCT o FROM " + SEPARATOR
+            + "orders o, o.items item WHERE item.quantity > $1 AND item.totalPrice > $2")
+                .with(POST_PROCESSOR))
+        .andExpect(status().isCreated())
+        .andExpect(header().string("Location", BASE_URL + "/queries/selectOrder"));
+
+    mockMvc.perform(
+        post("/v1/queries?id=selectCustomer&q=SELECT c FROM " + SEPARATOR
+            + "customers c WHERE c.customerId = $1")
+                .with(POST_PROCESSOR))
+        .andExpect(status().isCreated())
+        .andExpect(header().string("Location", BASE_URL + "/queries/selectCustomer"));
+
+    mockMvc.perform(post(
+        "/v1/queries?id=selectHighRoller&q=SELECT DISTINCT c FROM " + SEPARATOR + "customers c, "
+            + SEPARATOR
+            + "orders o, o.items item WHERE item.totalprice > $1 AND c.customerId = o.customerId")
+                .with(POST_PROCESSOR))
+        .andExpect(status().isCreated())
+        .andExpect(header().string("Location", BASE_URL + "/queries/selectHighRoller"));
+
+    mockMvc.perform(get("/v1/queries")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(
+            jsonPath("$.queries[*].id",
+                containsInAnyOrder("selectOrder", "selectCustomer", "selectHighRoller")));
+  }
+
+  @SuppressWarnings("unchecked")
+  @Test
+  @WithMockUser
+  public void executeQueryWithParams() throws Exception {
+    String QUERY_ARGS =
+        "[{\"@type\": \"int\", \"@value\": 2}, {\"@type\": \"double\", \"@value\": 150.00}]";
+
+    postEntry(); // order 1
+    putEntry(); // order 2
+    createQueries();
+    mockMvc.perform(post("/v1/queries/selectOrder")
+        .with(POST_PROCESSOR)
+        .content(QUERY_ARGS))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.[0]", jsonEquals(jsonResources.get(ORDER1_NO_TYPE_JSON))));
+  }
+
+  @Test
+  @WithMockUser
+  public void executeAdhocQuery() throws Exception {
+    putAll();
+    mockMvc.perform(get("/v1/queries/adhoc?q=SELECT * FROM " + SEPARATOR + "customers LIMIT 100")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(content().json(jsonResources.get(CUSTOMER_LIST_NO_TYPE_JSON)));
+  }
+
+  @Test
+  @WithMockUser
+  public void putAndUpdateQuery() throws Exception {
+    final String QUERY_ARGS = "[{\"@type\": \"int\", \"@value\": 20},"
+        + "{\"@type\": \"int\", \"@value\": 120},"
+        + "{\"@type\": \"int\", \"@value\": 130}]";
+
+    deleteAllQueries();
+    putAll(); // Create customers
+    mockMvc.perform(
+        post("/v1/queries?id=testQuery&q=SELECT DISTINCT c from " + SEPARATOR
+            + "customers c where lastName=$1")
+                .with(POST_PROCESSOR))
+        .andExpect(status().isCreated())
+        .andExpect(header().string("Location", BASE_URL + "/queries/testQuery"));
+
+    mockMvc.perform(
+        put("/v1/queries/testQuery?q=SELECT DISTINCT c from " + SEPARATOR
+            + "customers c where customerId IN SET ($1, $2, $3)")
+                .with(POST_PROCESSOR))
+        .andExpect(status().isOk());
+
+    mockMvc.perform(post("/v1/queries/testQuery")
+        .content(QUERY_ARGS)
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.[*].customerId", containsInAnyOrder(120, 130)))
+        .andExpect(jsonPath("$.[*].firstName", containsInAnyOrder("Preeti", "Varun")))
+        .andExpect(jsonPath("$.[*].lastName", containsInAnyOrder("Kumari", "Agrawal")));
+  }
+
+  @Test
+  @WithMockUser
+  public void deleteQuery() throws Exception {
+    mockMvc.perform(
+        post("/v1/queries?id=myQuery&q=SELECT DISTINCT c from " + SEPARATOR
+            + "customers c where lastName=$1")
+                .with(POST_PROCESSOR))
+        .andExpect(status().isCreated())
+        .andExpect(header().string("Location", BASE_URL + "/queries/myQuery"));
+
+    mockMvc.perform(delete("/v1/queries/myQuery")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk());
+
+    mockMvc.perform(get("/v1/queries/myQuery")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isNotFound());
+
+    mockMvc.perform(delete("/v1/queries/myQuery")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isNotFound());
+  }
+
+  @Test
+  @WithMockUser
+  public void putUnknownQuery() throws Exception {
+    mockMvc.perform(
+        put("/v1/queries/unknown?q=SELECT DISTINCT c from " + SEPARATOR
+            + "customers c where customerId IN SET ($1, $2, $3)")
+                .with(POST_PROCESSOR))
+        .andExpect(status().isNotFound());
+  }
+
+  @Test
+  @WithMockUser
+  public void createQueryFromRequestBody() throws Exception {
+    deleteAllQueries();
+
+    mockMvc.perform(post("/v1/queries?id=testQuery")
+        .content("SELECT * from " + SEPARATOR + "customers")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isCreated())
+        .andExpect(header().string("Location", BASE_URL + "/queries/testQuery"));
+
+    mockMvc.perform(get("/v1/queries")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.queries[*].id", containsInAnyOrder("testQuery")))
+        .andExpect(jsonPath("$.queries[*].oql",
+            containsInAnyOrder("SELECT * from " + SEPARATOR + "customers")));
+
+    mockMvc.perform(put("/v1/queries/testQuery")
+        .content("SELECT * from " + SEPARATOR + "orders")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk());
+
+    mockMvc.perform(get("/v1/queries")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.queries[*].id", containsInAnyOrder("testQuery")))
+        .andExpect(jsonPath("$.queries[*].oql",
+            containsInAnyOrder("SELECT * from " + SEPARATOR + "orders")));
+  }
+
+  @Test
+  @WithMockUser
+  public void listFunctions() throws Exception {
+    mockMvc.perform(get("/v1/functions"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.functions",
+            containsInAnyOrder("AddFreeItemToOrders", "EchoArgumentFunction",
+                "GetOrderDescriptionFunction")));
+  }
+
+  @Test
+  @WithMockUser
+  public void executeFunction() throws Exception {
+    final String FUNCTION_ARGS = "[{\"@type\": \"double\", \"@value\": 210},"
+        + "{\"@type\": \"org.apache.geode.rest.internal.web.controllers.Item\","
+        + "\"itemNo\": 599, \"description\": \"Part X Free on Bumper Offer\","
+        + "\"quantity\": 2, \"unitprice\": 5, \"totalprice\": 10.00}]";
+
+    putEntry(); // order 2
+    mockMvc.perform(post("/v1/functions/AddFreeItemToOrders?onRegion=orders")
+        .content(FUNCTION_ARGS)
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk());
+
+    mockMvc.perform(get("/v1/orders/2")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.items[*].itemNo", containsInAnyOrder(1, 2, 599)))
+        .andExpect(jsonPath("$.items[*].description",
+            containsInAnyOrder("Product-3", "Product-4", "Part X Free on Bumper Offer")));
+  }
+
+  @Test
+  @WithMockUser
+  public void executeFunctionWithFilter() throws Exception {
+    final String FUNCTION_ARGS = "[{\"@type\": \"String\", \"@value\": \"argument\"}]";
+
+    putEntry(); // order 2
+    mockMvc.perform(post("/v1/functions/GetOrderDescriptionFunction?onRegion=orders&filter=2")
+        .content(FUNCTION_ARGS)
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(content().string(containsString("Purchase order for company - B")));
+  }
+
+  @Test
+  @WithMockUser
+  public void executeFunctionWithFilterKeyNotFound() throws Exception {
+    final String FUNCTION_ARGS = "[{\"@type\": \"String\", \"@value\": \"argument\"}]";
+
+    putEntry(); // order 2
+    mockMvc.perform(post("/v1/functions/GetOrderDescriptionFunction?onRegion=orders&filter=1")
+        .content(FUNCTION_ARGS)
+        .with(POST_PROCESSOR))
+        .andExpect(status().isInternalServerError())
+        .andExpect(
+            jsonPath("$.message",
+                is("Server has encountered an error while processing function execution!")));
+
+  }
+
+  @Test
+  @WithMockUser
+  public void executeNoArgFunctionWithInvalidArg() throws Exception {
+    mockMvc.perform(post("/v1/functions/EchoArgumentFunction")
+        .content("{\"type\": \"int\"}")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(content().json("[{}]"));
+  }
+
+  @Test
+  @WithMockUser
+  public void executeNoArgFunctionWithEmptyObject() throws Exception {
+    mockMvc.perform(post("/v1/functions/EchoArgumentFunction")
+        .content("[{ }]")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(content().json("[{}]"));
+  }
+
+  @Test
+  @WithMockUser
+  public void executeNoArgFunctionWithEmptyArray() throws Exception {
+    mockMvc.perform(post("/v1/functions/EchoArgumentFunction")
+        .content("[]")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(content().json("[[]]"));
+  }
+
+  @Test
+  @WithMockUser
+  public void executeNoArgFunctionWithNoContent() throws Exception {
+    mockMvc.perform(post("/v1/functions/EchoArgumentFunction")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(content().json("[null]"));
+  }
+
+  @Test
+  @WithMockUser
+  public void getEntryAfterCreation() throws Exception {
+    mockMvc.perform(post("/v1/orders?key=10")
+        .content(jsonResources.get(ORDER1_JSON))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isCreated());
+
+    mockMvc.perform(get("/v1/orders/10")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(content().json(jsonResources.get(ORDER1_JSON)));
+  }
+
+  @Test
+  @WithMockUser
+  public void getPing() throws Exception {
+    mockMvc.perform(get("/v1/ping")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk());
+  }
+
+  @Test
+  @WithMockUser
+  public void headPing() throws Exception {
+    mockMvc.perform(head("/v1/ping")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk());
+  }
+
+  @Test
+  @WithMockUser
+  public void headCustomers() throws Exception {
+    putAll(); // load customers
+    mockMvc.perform(head("/v1/customers")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(header().string("Resource-Count", "60"));
+  }
+
+  @Test
+  @WithMockUser
+  public void getCustomersContainingNonAsciiText() throws Exception {
+    // Put customer containing non-ascii text
+    putAndVerifyCustomer("/v1/customers/1", CUSTOMER_CONTAINING_NON_ASCII_JSON, "/customers/1");
+
+    // Get customer containing non-ascii text
+    mockMvc.perform(get("/v1/customers/1")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(content().json(jsonResources.get(CUSTOMER_CONTAINING_NON_ASCII_JSON)));
+  }
+
+  @Test
+  @WithMockUser
+  public void executeAdhocQueryOnCustomersContainingNonAsciiText() throws Exception {
+    // Put customer containing non-ascii text
+    putAndVerifyCustomer("/v1/customers/1", CUSTOMER_CONTAINING_NON_ASCII_JSON, "/customers/1");
+
+    // Query full customer containing non-ascii text
+    // Convert the non-ascii expected result to UTF-8 for Windows Server 2016
+    mockMvc.perform(
+        get("/v1/queries/adhoc?q=SELECT * FROM " + SEPARATOR + "customers WHERE customerId = 1")
+            .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(content()
+            .json(new String(jsonResources.get(CUSTOMER_CONTAINING_NON_ASCII_QUERY_FULL_RESULT_JSON)
+                .getBytes(StandardCharsets.UTF_8))));
+
+    // Query customer fields containing non-ascii text
+    // Convert the non-ascii expected result to UTF-8 for Windows Server 2016
+    mockMvc.perform(get("/v1/queries/adhoc?q=SELECT firstName, lastName FROM " + SEPARATOR
+        + "customers WHERE customerId = 1")
+            .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(content().json(
+            new String(jsonResources.get(CUSTOMER_CONTAINING_NON_ASCII_QUERY_STRUCT_RESULT_JSON)
+                .getBytes(StandardCharsets.UTF_8))));
+  }
+
+  private void putAndVerifyCustomer(String url, String customerJson, String expectedResult)
+      throws Exception {
+    mockMvc.perform(put(url)
+        .content(jsonResources.get(customerJson))
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andExpect(header().string("Location", BASE_URL + expectedResult));
+  }
+
+  private void deleteAllQueries() throws Exception {
+    MvcResult result = mockMvc.perform(get("/v1/queries")
+        .with(POST_PROCESSOR))
+        .andExpect(status().isOk())
+        .andReturn();
+
+    String content = result.getResponse().getContentAsString();
+    List<String> ids = JsonPath.read(content, "$.queries[*].id");
+
+    for (String id : ids) {
+      mockMvc.perform(delete("/v1/queries/" + id)
+          .with(POST_PROCESSOR))
+          .andExpect(status().isOk());
+    }
+  }
+
+  private static class StandardRequestPostProcessor implements RequestPostProcessor {
+
+    @SuppressWarnings("deprecation")
+    private static final MediaType APPLICATION_JSON_UTF8 = MediaType.APPLICATION_JSON_UTF8;
+
+    @Override
+    public MockHttpServletRequest postProcessRequest(MockHttpServletRequest request) {
+      request.addHeader(HttpHeaders.ACCEPT, APPLICATION_JSON_UTF8);
+      request.addHeader(HttpHeaders.CONTENT_TYPE, APPLICATION_JSON_UTF8);
+      return request;
+    }
+  }
+
+  static class SimpleCacheLoader implements CacheLoader<Object, Object>, Declarable {
+    @Override
+    public Object load(LoaderHelper<Object, Object> helper) {
+      // throws TimeoutException
+      throw new TimeoutException("Could not load entry. Request timed out.");
+    }
+
+    @Override
+    public void close() {
+      // nothing
+    }
+
+    @SuppressWarnings("deprecation")
+    @Deprecated
+    @Override
+    public void init(Properties props) {
+      // nothing
+    }
+  }
+
+  static class SimpleCacheWriter implements CacheWriter<Object, Object> {
+    @Override
+    public void close() {
+      // nothing
+    }
+
+    @Override
+    public void beforeUpdate(EntryEvent<Object, Object> event) throws CacheWriterException {
+      // nothing
+    }
+
+    @Override
+    public void beforeCreate(EntryEvent<Object, Object> event) throws CacheWriterException {
+      throw new CacheWriterException("Put request failed as gemfire has thrown an error.");
+    }
+
+    @Override
+    public void beforeDestroy(EntryEvent<Object, Object> event) throws CacheWriterException {
+      throw new RegionDestroyedException("Region has already been destroyed.", "dummyRegion");
+    }
+
+    @Override
+    public void beforeRegionDestroy(RegionEvent<Object, Object> event) throws CacheWriterException {
+      // nothing
+    }
+
+    @Override
+    public void beforeRegionClear(RegionEvent<Object, Object> event) throws CacheWriterException {
+      // nothing
+    }
+  }
+}
+
+
+class TestContextLoader extends GenericXmlWebContextLoader {
+  @Override
+  protected void loadBeanDefinitions(GenericWebApplicationContext context,
+      WebMergedContextConfiguration webMergedConfig) {
+    super.loadBeanDefinitions(context, webMergedConfig);
+    context.getServletContext().setAttribute(
+        HttpService.SECURITY_SERVICE_SERVLET_CONTEXT_PARAM,
+        RestAccessControllerTest.rule.getCache().getSecurityService());
+  }
+
+}

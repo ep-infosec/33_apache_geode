@@ -1,0 +1,171 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more contributor license
+ * agreements. See the NOTICE file distributed with this work for additional information regarding
+ * copyright ownership. The ASF licenses this file to You under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance with the License. You may obtain a
+ * copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License
+ * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+ * or implied. See the License for the specific language governing permissions and limitations under
+ * the License.
+ */
+
+package org.apache.geode.cache.query.internal;
+
+import java.io.DataInput;
+import java.io.DataOutput;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
+import org.apache.geode.cache.query.SelectResults;
+import org.apache.geode.cache.query.internal.types.CollectionTypeImpl;
+import org.apache.geode.cache.query.internal.types.ObjectTypeImpl;
+import org.apache.geode.cache.query.types.CollectionType;
+import org.apache.geode.cache.query.types.ObjectType;
+import org.apache.geode.cache.query.types.StructType;
+import org.apache.geode.internal.Assert;
+import org.apache.geode.internal.InternalDataSerializer;
+import org.apache.geode.internal.serialization.DataSerializableFixedID;
+import org.apache.geode.internal.serialization.DeserializationContext;
+import org.apache.geode.internal.serialization.KnownVersion;
+import org.apache.geode.internal.serialization.SerializationContext;
+
+// @todo probably should assert element type when elements added
+/**
+ * Implementation of SelectResults that extends HashSet If the elements are Structs, then use a
+ * StructSet instead.
+ *
+ * @since GemFire 4.0
+ */
+public class ResultsSet extends HashSet implements SelectResults, DataSerializableFixedID {
+  private static final long serialVersionUID = -5423281031630216824L;
+  private ObjectType elementType;
+
+  /**
+   * Empty constructor to satisfy <code>DataSerializer</code> requirements
+   */
+  public ResultsSet() {}
+
+  ResultsSet(Collection c) {
+    super(c);
+  }
+
+  public ResultsSet(SelectResults sr) {
+    super(sr);
+    // grab type info
+    setElementType(sr.getCollectionType().getElementType());
+  }
+
+  public ResultsSet(ObjectType elementType) {
+    super();
+    setElementType(elementType);
+  }
+
+  ResultsSet(ObjectType elementType, int initialCapacity) {
+    super(initialCapacity);
+    setElementType(elementType);
+  }
+
+  ResultsSet(int initialCapacity, float loadFactor) {
+    super(initialCapacity, loadFactor);
+  }
+
+  ResultsSet(int initialCapacity) {
+    super(initialCapacity);
+  }
+
+  @Override
+  public void setElementType(ObjectType elementType) {
+    if (elementType instanceof StructType) {
+      throw new IllegalArgumentException(
+          "This collection does not support struct elements");
+    }
+    this.elementType = elementType;
+  }
+
+  @Override
+  public boolean equals(Object other) {
+    if (other == this) {
+      return true;
+    }
+    if (!(other instanceof ResultsSet)) {
+      return false;
+    }
+    if (!elementType.equals(((ResultsSet) other).elementType)) {
+      return false;
+    }
+    return super.equals(other);
+  }
+
+  @Override
+  public int hashCode() {
+    return elementType.hashCode();
+  }
+
+  @Override
+  public List asList() {
+    return new ArrayList(this);
+  }
+
+  @Override
+  public Set asSet() {
+    return this;
+  }
+
+  @Override
+  public CollectionType getCollectionType() {
+    return new CollectionTypeImpl(Set.class, elementType);
+  }
+
+  @Override
+  public boolean isModifiable() {
+    return true;
+  }
+
+  @Override
+  public int occurrences(Object element) {
+    return contains(element) ? 1 : 0;
+  }
+
+
+  @Override
+  public int getDSFID() {
+    return RESULTS_SET;
+  }
+
+  @Override
+  public void fromData(DataInput in,
+      DeserializationContext context) throws IOException, ClassNotFoundException {
+    int size = in.readInt();
+    ObjectTypeImpl clt = new ObjectTypeImpl();
+    InternalDataSerializer.invokeFromData(clt, in);
+    setElementType(clt);
+    for (int k = size; k > 0; k--) {
+      add(context.getDeserializer().readObject(in));
+    }
+  }
+
+  @Override
+  public void toData(DataOutput out,
+      SerializationContext context) throws IOException {
+    out.writeInt(size());
+    ObjectTypeImpl ctImpl = (ObjectTypeImpl) getCollectionType().getElementType();
+    Assert.assertTrue(ctImpl != null, "ctImpl can not be null");
+    InternalDataSerializer.invokeToData(ctImpl, out);
+    for (final Object o : this) {
+      context.getSerializer().writeObject(o, out);
+    }
+  }
+
+  @Override
+  public KnownVersion[] getSerializationVersions() {
+    return null;
+  }
+}

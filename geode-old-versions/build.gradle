@@ -1,0 +1,143 @@
+import java.nio.file.Paths
+
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+plugins {
+  id 'geode-java'
+}
+
+project.ext.installs = new Properties()
+
+subprojects {
+  it.apply plugin: 'base'
+
+  def oldGeodeVersion = project.name
+
+  boolean isIncubating = oldGeodeVersion.contains("incubating")
+  boolean useTgz = !isIncubating && ((oldGeodeVersion >= "1.7.0") || (oldGeodeVersion.length() > 5))
+  boolean downloadInstall = !isIncubating && ((oldGeodeVersion >= "1.2.0") || (oldGeodeVersion.length() > 5))
+
+  String archiveType = useTgz ? "tgz" : "zip"
+
+  // Each project is named after its fixed version, removing dots and removing any release tags.
+  // eg: 1.0.0-incubating -> test100
+  def projSrcName = "test".concat(oldGeodeVersion.split(/\.|-/)
+      .toList()
+      .subList(0,3)
+      .join(''))
+
+  def unpackDest = project.buildDir.toPath().resolve('apache-geode-'.concat(oldGeodeVersion))
+
+  project.configurations.create("oldInstall")
+
+  if (downloadInstall) {
+    project.dependencies.add "oldInstall", "org.apache.geode:apache-geode:${oldGeodeVersion}@${archiveType}"
+
+    parent.ext.installs.setProperty(oldGeodeVersion, unpackDest.toString())
+    project.tasks.register('downloadAndUnzipFile') {
+      onlyIf { downloadInstall }
+      inputs.files {
+        configurations.oldInstall
+      }
+      outputs.dir {
+        file(unpackDest)
+      }
+
+      doLast {
+        def oldArchive = configurations."oldInstall".singleFile
+        copy {
+          from(useTgz ? tarTree(oldArchive) : zipTree(oldArchive))
+          into project.buildDir
+        }
+      }
+    }
+    project.tasks.register('enumerateArchiveContents') {
+      onlyIf { downloadInstall }
+      inputs.files {
+        downloadAndUnzipFile
+      }
+      def contentsFile = project.buildDir.toPath().resolve('contents.txt')
+      outputs.files {
+        file(contentsFile)
+      }
+      doLast {
+        new File(contentsFile.toAbsolutePath().toString()).text = file(unpackDest).listFiles()
+      }
+    }
+  }
+}
+
+def generatedResources = buildDir.toPath().resolve('generated-resources').resolve('test').toString()
+tasks.register('createGeodeClasspathsFile') {
+  def classpathsFile = Paths.get(generatedResources).resolve('geodeOldVersionClasspaths.txt').toString()
+  def installsFile = Paths.get(generatedResources).resolve('geodeOldVersionInstalls.txt').toString()
+  outputs.files {classpathsFile }
+  outputs.files {installsFile}
+
+  doLast {
+    new FileOutputStream(classpathsFile).withStream { fos ->
+      def cp = new Properties()
+      project.ext.installs.each {
+        File libdir = file("${it.value}/lib")
+        FileCollection libJars = layout.files(libdir.listFiles())
+          .filter { File f ->
+            f.name.endsWith('.jar')
+          }
+        cp.setProperty(it.key, libJars.join(':'))
+      }
+      cp.store(fos, '')
+    }
+
+    // TODO potential caching issue with implicit configuration in doLast action.
+    new FileOutputStream(installsFile).withStream { fos ->
+      project.ext.installs.store(fos, '')
+    }
+  }
+}
+
+tasks.named('clean') {
+  dependsOn subprojects.collect { it.tasks.named('clean') }
+}
+
+project.createGeodeClasspathsFile.mustRunAfter(clean)
+project.createGeodeClasspathsFile.inputs.files(getTasksByName('downloadAndUnzipFile', true))
+project.createGeodeClasspathsFile.inputs.files(getTasksByName('enumerateArchiveContents', true))
+tasks.named('build') {
+  dependsOn(tasks.named('createGeodeClasspathsFile'))
+}
+
+configurations {
+  oldVersions
+  classpathsOutput {
+    description 'previous geode releases, and their classpath(s)'
+  }
+}
+
+sourceSets {
+  oldVersions {
+    output.dir(generatedResources, builtBy: createGeodeClasspathsFile)
+  }
+}
+tasks.register('geodeOldVersionClasspathsJar', Jar) {
+  from sourceSets.oldVersions.output
+  classifier 'oldVersions'
+}
+
+artifacts {
+  classpathsOutput tasks.named('geodeOldVersionClasspathsJar')
+}

@@ -1,0 +1,168 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more contributor license
+ * agreements. See the NOTICE file distributed with this work for additional information regarding
+ * copyright ownership. The ASF licenses this file to You under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance with the License. You may obtain a
+ * copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License
+ * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+ * or implied. See the License for the specific language governing permissions and limitations under
+ * the License.
+ */
+package org.apache.geode.admin.jmx;
+
+import javax.management.MBeanServer;
+import javax.management.MalformedObjectNameException;
+import javax.management.ObjectName;
+
+import org.apache.geode.LogWriter;
+import org.apache.geode.admin.AdminDistributedSystem;
+import org.apache.geode.admin.AdminException;
+
+/**
+ * A server component that provides administration-related information about a GemFire distributed
+ * system via the Java Management Extension JMX API. When a JMX <code>Agent</code> is created, it
+ * registers an MBean that represents {@link #getObjectName itself}. Click
+ * <A href="doc-files/mbeans-descriptions.html">here</A> for a description of the attributes,
+ * operations, and notifications of this and other GemFire JMX MBeans.
+ *
+ * <P>
+ *
+ * The GemFire JMX Agent currently supports three JMX "adapters" through which clients can access
+ * the GemFire management beans: an "HTTP adapter" that allows a web browser client to view and
+ * modify management beans via HTTP or HTTPS, an "RMI adapter" that allows Java programs to access
+ * management beans using Remote Method Invocation, and an "SNMP adapter" that allows SNMP to access
+ * management beans. Information about configuring these adapters can be found in
+ * {@link AgentConfig}.
+ *
+ * <P>
+ *
+ * In most distributed caching architectures, JMX administration agents are run in their own
+ * processes. A stand-alone JMX agent is managed using the <code>agent</code> command line utility:
+ *
+ * <PRE>
+ * $ agent start
+ * </PRE>
+ *
+ * This class allows a GemFire application VM to host a JMX management agent. Architectures with
+ * "co-located" JMX agents reduce the number of overall proceses required. However, hosting a JMX
+ * management agent in the same VM as a GemFire application is not generally recommended because it
+ * adds extra burden to an application VM and in the event that the application VM exits the
+ * administration information will no longer be available.
+ *
+ * @see AgentConfig
+ * @see AgentFactory
+ *
+ * @since GemFire 4.0
+ * @deprecated as of 7.0 use the <code><a href=
+ *             "{@docRoot}/org/apache/geode/management/package-summary.html">management</a></code>
+ *             package instead
+ */
+@Deprecated
+public interface Agent {
+
+  /** Lookup name for RMIConnector when rmi-registry-enabled is true */
+  String JNDI_NAME = "/jmxconnector";
+
+  ////////////////////// Instance Methods //////////////////////
+
+  /**
+   * Returns the configuration object for this JMX Agent.
+   *
+   * @return the configuration object for this JMX Agent
+   */
+  AgentConfig getConfig();
+
+  /**
+   * Starts this JMX Agent and its associated adapters. This method does not
+   * {@linkplain #connectToSystem connect} to the distributed system.
+   */
+  void start();
+
+  /**
+   * Returns the JMX <code>MBeanServer</code> with which GemFire MBeans are registered or
+   * <code>null</code> if this <code>Agent</code> is not started.
+   *
+   * @return the JMX <code>MBeanServer</code> with which GemFire MBeans are registered
+   */
+  MBeanServer getMBeanServer();
+
+  /**
+   * {@linkplain #disconnectFromSystem Disconnects} from the distributed system and stops this JMX
+   * Agent and all of its associated adapters.
+   */
+  void stop();
+
+  /**
+   * Returns the <code>ObjectName</code> of the JMX management bean that represents this agent or
+   * <code>null</code> if this <code>Agent</code> has not been started.
+   *
+   * @return the <code>ObjectName</code> of the JMX management bean that represents this agent
+   */
+  ObjectName getObjectName();
+
+  /**
+   * Returns whether or not this JMX <code>Agent</code> is currently providing information about a
+   * distributed system.
+   *
+   * @return whether or not this JMX <code>Agent</code> is currently providing information about a
+   *         distributed system.
+   */
+  boolean isConnected();
+
+  /**
+   * Connects to the distributed system described by this <code>Agent</code>'s configuration.
+   *
+   * @return The object name of the system that the <code>Agent</code> is now connected to.
+   *
+   * @throws AdminException if an exception is encountered while connecting
+   * @throws MalformedObjectNameException if the format of an MBean name specified in the
+   *         configuration does not correspond to a valid ObjectName
+   */
+  ObjectName connectToSystem() throws AdminException, MalformedObjectNameException;
+
+  /**
+   * Returns the <code>AdminDistributedSystem</code> that underlies this JMX <code>Agent</code> or
+   * <code>null</code> is this agent is not {@linkplain #isConnected connected}.
+   *
+   * @return the <code>AdminDistributedSystem</code> that underlies this JMX <code>Agent</code>
+   */
+  AdminDistributedSystem getDistributedSystem();
+
+  /**
+   * Returns the object name of the JMX MBean that represents the distributed system administered by
+   * this <code>Agent</code> or <code>null</code> if this <code>Agent</code> has not
+   * {@linkplain #connectToSystem connected} to the distributed system.
+   *
+   * @return the object name of the JMX MBean that represents the distributed system administered by
+   *         this <code>Agent</code>
+   *
+   * @throws MalformedObjectNameException if the format of the JMX MBean name does not correspond to
+   *         a valid ObjectName
+   */
+  ObjectName manageDistributedSystem() throws MalformedObjectNameException;
+
+  /**
+   * Disconnects this agent from the distributed system and unregisters the management beans that
+   * provided information about it. However, this agent's adapters are not stopped and it is
+   * possible to reconfigure this <code>Agent</code> to connect to another distributed system.
+   */
+  void disconnectFromSystem();
+
+  /**
+   * Saves the configuration for this <code>Agent</code> to the file specified by @link
+   * AgentConfig#getPropertyFile.
+   */
+  void saveProperties();
+
+  /**
+   * Returns the <code>LogWriter</code> used for logging information.
+   *
+   * @return the <code>LogWriter</code> used for logging information
+   */
+  LogWriter getLogWriter();
+
+}

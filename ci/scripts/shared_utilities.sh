@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+find-here-test-reports() {
+  output_directories_file=${1}
+  set +e
+  find . -type d -name "reports" > "${output_directories_file}"
+  # shellcheck disable=SC2129
+  find .  -type d -name "test-results" >> "${output_directories_file}"
+  (find . -type d -name "*Test" | grep "build/[^/]*Test$") >> "${output_directories_file}"
+  find . -name "*-progress*txt" >> "${output_directories_file}"
+  find . -name "*.hprof" -o -name "hs_err*.log" -o -name "replay*.log" >> "${output_directories_file}"
+  find . -type d -name "callstacks" >> "${output_directories_file}"
+  find .gradle_logs -name '*.log' >> "${output_directories_file}"
+  echo "Collecting the following artifacts..."
+  cat "${output_directories_file}"
+  echo ""
+}
+
+## Parsing functions for the Concourse Semver resource.
+## These functions expect one input in the form of the resource file, e.g., "1.14.0-build.325"
+get-geode-version() {
+  local CONCOURSE_VERSION=$1
+  # Prune all after '-', yielding e.g., "1.14.0"
+  local GEODE_PRODUCT_VERSION=${CONCOURSE_VERSION%%-*}
+  (>&2 echo "Geode product VERSION is ${GEODE_PRODUCT_VERSION}")
+  echo "${GEODE_PRODUCT_VERSION}"
+}
+
+get-geode-version-qualifier-slug() {
+  local CONCOURSE_VERSION=$1
+  # Prune all before '-', yielding e.g., "build.325"
+  local CONCOURSE_BUILD_SLUG=${CONCOURSE_VERSION##*-}
+  # Prune all before '.', yielding e.g., "build"
+  local QUALIFIER_SLUG=${CONCOURSE_BUILD_SLUG%%.*}
+  echo "${QUALIFIER_SLUG}"
+}
+
+get-geode-build-id() {
+  local CONCOURSE_VERSION=$1
+  # Prune all before the last '.', yielding e.g., "325"
+  local BUILD_ID=${CONCOURSE_VERSION##*.}
+  echo "${BUILD_ID}"
+}
+
+get-geode-build-id-padded() {
+  local CONCOURSE_VERSION="${1}"
+  local BUILD_ID;
+  BUILD_ID=$(get-geode-build-id "${CONCOURSE_VERSION}")
+  # Prune all before the last '.', yielding e.g., "325", then zero-pad, e.g., "0325"
+  local PADDED_BUILD_ID
+  PADDED_BUILD_ID=$(printf "%04d" "${BUILD_ID}")
+  (>&2 echo "Build ID is ${PADDED_BUILD_ID}")
+  echo "${PADDED_BUILD_ID}"
+}
+
+get-full-version() {
+  # Extract each component so that the BuildId can be zero-padded, then reassembled.
+  local CONCOURSE_VERSION=$1
+  local GEODE_PRODUCT_VERSION
+  GEODE_PRODUCT_VERSION=$(get-geode-version "${CONCOURSE_VERSION}")
+  local QUALIFIER_SLUG
+  QUALIFIER_SLUG=$(get-geode-version-qualifier-slug "${CONCOURSE_VERSION}")
+  local PADDED_BUILD_ID
+  PADDED_BUILD_ID=$(get-geode-build-id-padded "${CONCOURSE_VERSION}")
+  local FULL_PRODUCT_VERSION="${GEODE_PRODUCT_VERSION}-${QUALIFIER_SLUG}.${PADDED_BUILD_ID}"
+  (>&2 echo "Full product VERSION is ${FULL_PRODUCT_VERSION}")
+  echo "${FULL_PRODUCT_VERSION}"
+}
+
+get_geode_pr_exclusion_dirs() {
+  local exclude_dirs=".github ci dev-tools etc geode-book geode-docs"
+  echo "${exclude_dirs}"
+}
+
+get_geode_pr_exclusion_files() {
+  local exclude_files="CODEOWNERS .gitignore .gitattributes .travis.yml CODEWATCHERS COMMITWATCHERS .asf.yaml CODE_OF_CONDUCT.md README.md TESTING.md"
+  echo "${exclude_files}"
+}
+
+is_source_from_pr_testable() {
+
+  if [[ $# -ne 3 ]]; then
+    >&2 echo "Invalid args. Try ${0} \"<repo_path>\" \"<list of exclusion dirs>\" \"<list of exclusion files>\""
+    exit 1
+  fi
+  local repo_dir="${1}"
+  if [[ ! -d "${repo_dir}" ]]; then
+    # If the repo_dir does not exist, assume call from non-PR
+    return 0;
+  fi
+
+  local exclude_dirs="${2}"
+  local exclude_files="${3}"
+
+  # shellcheck disable=SC2164
+  pushd "${repo_dir}" 2>&1 >> /dev/null
+    local base_dir
+    base_dir=$(git rev-parse --show-toplevel)
+    local github_pr_dir
+    github_pr_dir="${base_dir}/.git/resource"
+    # shellcheck disable=SC2164
+    pushd "${base_dir}" 2>&1 >> /dev/null
+      local return_code=0
+      if [ -d "${github_pr_dir}" ]; then
+        local exclude_pathspec=""
+        for d in $(echo ${exclude_dirs}); do
+          exclude_pathspec="${exclude_pathspec} :(exclude,glob)${d}/**"
+        done
+        for f in $(echo ${exclude_files}); do
+          exclude_pathspec="${exclude_pathspec} :(exclude,glob)${f}"
+        done
+        # shellcheck disable=SC2164
+        pushd "${base_dir}" 2>&1 >> /dev/null
+          local files
+          # shellcheck disable=SC2046
+          files=$(git diff --name-only "$(cat "${github_pr_dir}/base_sha")" -- . $(echo "${exclude_pathspec}"))
+        # shellcheck disable=SC2164
+        popd 2>&1 >> /dev/null
+        if [[ -z "${files}" ]]; then
+          >&2 echo "CI changes only, skipping tests..."
+          return_code=1
+        else
+          >&2 echo "Running PR tests..."
+        fi
+      else
+        >&2 echo "Running tests..."
+      fi
+    # shellcheck disable=SC2164
+    popd 2>&1 >> /dev/null
+  # shellcheck disable=SC2164
+  popd 2>&1 >> /dev/null
+  return ${return_code}
+}

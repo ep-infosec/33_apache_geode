@@ -1,0 +1,434 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+{% from 'shared_jinja.yml' import github_access with context %}
+
+---
+
+resource_types:
+- name: gci
+  type: registry-image
+  source:
+    registry_mirror:
+      host: mirror.gcr.io
+    repository: smgoller/gci-resource
+
+resources:
+- name: build-concourse-dockerfile
+  type: git
+  source:
+    {{ github_access() | indent(4) }}
+    branch: ((geode-build-branch))
+    paths:
+    - ci/docker/*
+
+- name: build-concourse-docker-image
+  type: docker-image
+  source:
+    username: ((docker-username))
+    password: ((docker-password))
+    repository: gcr.io/((gcp-project))/((pipeline-prefix))concourse
+
+- name: windows-base-family
+  type: gci
+  check_every: 24h
+  source:
+    key: ((concourse-gcp-key))
+    family_project: windows-cloud
+    family: ((windows-base-family))
+
+- name: linux-base-family
+  type: gci
+  check_every: 24h
+  source:
+    key: ((concourse-gcp-key))
+    family_project: ubuntu-os-cloud
+    family: ((linux-base-family))
+
+- name: openjdk8-docker-image
+  type: docker-image
+  source:
+    repository: bellsoft/liberica-openjdk-debian
+    tag: 8
+
+- name: geode-benchmarks-image
+  type: git
+  source:
+    branch: ((geode-build-branch))
+    paths:
+    - infrastructure/scripts/aws/image
+    uri: https://github.com/((geode-fork))/geode-benchmarks.git
+
+- name: packer-145-image
+  icon: docker
+  type: registry-image
+  source:
+    registry_mirror:
+      host: mirror.gcr.io
+    repository: hashicorp/packer
+    tag: 1.4.5
+
+- name: gcloud-sdk-image
+  icon: docker
+  type: registry-image
+  source:
+    registry_mirror:
+      host: mirror.gcr.io
+    repository: google/cloud-sdk
+    tag: alpine
+
+# Base image for full-regression-runner
+- name: alpine-314-image
+  icon: docker
+  type: registry-image
+  source:
+    registry_mirror:
+      host: mirror.gcr.io
+    repository: alpine
+    tag: 3.14
+
+- name: google-geode-builder
+  type: git
+  source:
+    branch: ((geode-build-branch))
+    paths:
+    - ci/scripts/build_image.sh
+    - ci/images/google-geode-builder
+    {{ github_access() | indent(4) }}
+
+- name: google-windows-geode-builder
+  type: git
+  source:
+    branch: ((geode-build-branch))
+    paths:
+    - ci/scripts/build_image.sh
+    - ci/images/google-windows-geode-builder
+    {{ github_access() | indent(4) }}
+
+- name: alpine-docker-image
+  type: docker-image
+  source:
+    repository: alpine
+    tag: latest
+    skip_download: true
+
+- name: alpine-tools-dockerfile
+  type: git
+  source:
+    branch: ((geode-build-branch))
+    paths:
+    - ci/images/alpine-tools/*
+    {{ github_access() | indent(4) }}
+
+- name: alpine-tools-docker-image
+  type: docker-image
+  source:
+    username: ((docker-username))
+    password: ((docker-password))
+    repository: gcr.io/((gcp-project))/((pipeline-prefix))alpine-tools
+
+- name: concourse-metadata-resource-dockerfile
+  type: git
+  source:
+    {{ github_access() | indent(4) }}
+    branch: ((geode-build-branch))
+    paths:
+    - ci/resource-types/concourse-metadata-resource/*
+
+- name: concourse-metadata-resource-docker-image
+  type: docker-image
+  source:
+    username: ((docker-username))
+    password: ((docker-password))
+    repository: gcr.io/((gcp-project))/((pipeline-prefix))concourse-metadata-resource
+
+- name: metric-tools-dockerfile
+  type: git
+  source:
+    {{ github_access() | indent(4) }}
+    branch: ((geode-build-branch))
+    paths:
+    - ci/images/metric-tools/*
+
+- name: metric-tools-docker-image
+  type: docker-image
+  source:
+    username: ((docker-username))
+    password: ((docker-password))
+    repository: gcr.io/((gcp-project))/((pipeline-prefix))metric-tools
+
+- name: geode-dependencies
+  type: git
+  source:
+    {{ github_access() | indent(4) }}
+    branch: ((geode-build-branch))
+    depth: 1
+    paths:
+    - "build-tools/geode-dependency-management/src/main/groovy/org/apache/geode/gradle/plugins/DependencyConstraints.groovy"
+
+- name: gce-instances-resource-dockerfile
+  type: git
+  source:
+    {{ github_access() | indent(4) }}
+    branch: ((geode-build-branch))
+    paths:
+    - ci/resource-types/gce-instances-resource/*
+
+- name: gce-instances-resource-docker-image
+  type: docker-image
+  source:
+    username: ((docker-username))
+    password: ((docker-password))
+    repository: gcr.io/((gcp-project))/((pipeline-prefix))gce-instances-resource
+
+- name: github-pr-resource-image
+  type: docker-image
+  source:
+    username: ((docker-username))
+    password: ((docker-password))
+    repository: gcr.io/((gcp-project))/((pipeline-prefix))github-pr-resource
+
+- name: github-pr-resource-dockerfile
+  type: git
+  source:
+    branch: master
+    uri: https://github.com/digitalocean/github-pr-resource.git
+  version:
+    ref: 1abb4b2a162e78099dab0b30144fec1e6c9b696d
+
+- name: gcs-resource-with-json-content
+  icon: github-circle
+  type: git
+  check_every: 168h
+  source:
+    branch: master
+    uri: https://github.com/steve-sienk/gcs-resource.git
+
+- name: gcs-resource-with-json-content-image
+  icon: docker
+  type: docker-image
+  source:
+    username: ((docker-username))
+    password: ((docker-password))
+    repository: gcr.io/((gcp-project))/((pipeline-prefix))gcs-resource-with-json-content
+
+jobs:
+- name: build-github-pr-resource-image
+  public: ((public-pipelines))
+  serial: true
+  plan:
+    - get: alpine-tools-docker-image
+      passed: [build-alpine-tools-docker-image]
+    - get:  github-pr-resource-dockerfile
+      trigger: true
+    - put: github-pr-resource-image
+      params:
+        build: github-pr-resource-dockerfile
+        tag_as_latest: true
+
+- name: build-concourse-docker-image
+  public: ((public-pipelines))
+  serial: true
+  plan:
+  - in_parallel:
+    - get: openjdk8-docker-image
+      trigger: true
+    - get: build-concourse-dockerfile
+      trigger: true
+    - get: geode-dependencies
+      trigger: true
+  - put: build-concourse-docker-image
+    params:
+      build: build-concourse-dockerfile/ci/docker
+      tag_as_latest: true
+
+- name: build-geode-benchmarks-image
+  public: ((public-pipelines))
+  serial: true
+  plan:
+  - in_parallel:
+    - get: geode-benchmarks-image
+      trigger: true
+    - get: alpine-tools-docker-image
+      passed: [build-alpine-tools-docker-image]
+  - task: build-image
+    timeout: 1h
+    image: alpine-tools-docker-image
+    config:
+      inputs:
+      - name: geode-benchmarks-image
+      outputs:
+      - name: results
+      platform: linux
+      params:
+        AWS_ACCESS_KEY_ID: ((benchmarks-access-key-id))
+        AWS_SECRET_ACCESS_KEY: ((benchmarks-secret-access-key))
+        AWS_DEFAULT_REGION: us-west-2
+        AWS_REGION: us-west-2
+        PURPOSE: ((pipeline-prefix))geode-benchmarks
+      run:
+        path: bash
+        args:
+          - -ec
+          - |-
+            pushd geode-benchmarks-image/infrastructure/scripts/aws/image
+            packer build -var "purpose=${PURPOSE}" packer.json
+            popd
+
+- name: build-google-geode-builder
+  public: ((public-pipelines))
+  serial: true
+  plan:
+  - in_parallel:
+    - get: google-geode-builder
+      trigger: true
+    - get: alpine-tools-docker-image
+      passed: [build-alpine-tools-docker-image]
+    - get: linux-base-family
+      trigger: true
+    - get: geode-dependencies
+      trigger: true
+  - task: build-image
+    timeout: 1h
+    image: alpine-tools-docker-image
+    config:
+      inputs:
+      - name: google-geode-builder
+      - name: linux-base-family
+        path: base-family
+      outputs:
+      - name: results
+      platform: linux
+      params:
+        PIPELINE_PREFIX: ((pipeline-prefix))
+        GCP_PROJECT: ((gcp-project))
+        GCP_NETWORK: ((gcp-network))
+        GCP_SUBNETWORK: ((gcp-subnet))
+        INTERNAL: "true"
+        CONCOURSE_GCP_KEY: "((concourse-gcp-key))"
+        JAVA_BUILD_VERSION: 8
+      run:
+        path: google-geode-builder/ci/scripts/build_image.sh
+        args:
+        - google-geode-builder/ci/images/google-geode-builder/packer.json
+
+- name: build-google-windows-geode-builder
+  public: ((public-pipelines))
+  serial: true
+  plan:
+  - in_parallel:
+    - get: google-windows-geode-builder
+      trigger: true
+    - get: alpine-tools-docker-image
+      passed:
+      - build-alpine-tools-docker-image
+    - get: windows-base-family
+      trigger: true
+  - task: build-image
+    timeout: 3h
+    attempts: 3
+    image: alpine-tools-docker-image
+    config:
+      inputs:
+      - name: google-windows-geode-builder
+      - name: windows-base-family
+        path: base-family
+      outputs:
+      - name: results
+      platform: linux
+      params:
+        PIPELINE_PREFIX: ((pipeline-prefix))
+        GCP_PROJECT: ((gcp-project))
+        GCP_NETWORK: ((gcp-network))
+        GCP_SUBNETWORK: ((gcp-subnet))
+        INTERNAL: "true"
+        CONCOURSE_GCP_KEY: "((concourse-gcp-key))"
+        JAVA_BUILD_VERSION: 8
+      run:
+        path: google-windows-geode-builder/ci/scripts/build_image.sh
+        args:
+          - google-windows-geode-builder/ci/images/google-windows-geode-builder/packer.json
+
+- name: build-alpine-tools-docker-image
+  public: ((public-pipelines))
+  serial: true
+  plan:
+  - in_parallel:
+    - get: alpine-tools-dockerfile
+      trigger: true
+    # Base images, used for tracking
+    - get: gcloud-sdk-image
+      trigger: true
+    - get: packer-145-image
+    - get: alpine-314-image
+  - put: alpine-tools-docker-image
+    params:
+      build: alpine-tools-dockerfile/ci/images/alpine-tools
+      tag_as_latest: true
+
+- name: build-concourse-metadata-resource-docker-image
+  public: ((public-pipelines))
+  serial: true
+  plan:
+  - in_parallel:
+    - get: alpine-docker-image
+      trigger: true
+    - get: concourse-metadata-resource-dockerfile
+      trigger: true
+  - put: concourse-metadata-resource-docker-image
+    params:
+      build: concourse-metadata-resource-dockerfile/ci/resource-types/concourse-metadata-resource
+      tag_as_latest: true
+
+- name: build-metric-tools-docker-image
+  public: ((public-pipelines))
+  serial: true
+  plan:
+  - in_parallel:
+    - get: alpine-docker-image
+      trigger: true
+    - get: metric-tools-dockerfile
+      trigger: true
+  - put: metric-tools-docker-image
+    params:
+      build: metric-tools-dockerfile/ci/images/metric-tools
+      tag_as_latest: true
+
+- name: build-gce-instances-resource-docker-image
+  public: ((public-pipelines))
+  serial: true
+  plan:
+  - in_parallel:
+    - get: alpine-docker-image
+      trigger: true
+    - get: gce-instances-resource-dockerfile
+      trigger: true
+  - put: gce-instances-resource-docker-image
+    params:
+      build: gce-instances-resource-dockerfile/ci/resource-types/gce-instances-resource
+      tag_as_latest: true
+
+- name: build-json-gcs-resource-image
+  serial: true
+  public: false
+  plan:
+  - get: gcs-resource-with-json-content
+    trigger: true
+  - put: gcs-resource-with-json-content-image
+    params:
+      build: gcs-resource-with-json-content
+      tag_as_latest: true

@@ -1,0 +1,124 @@
+---
+title:  Setting Up the HTTP Module for Tomcat
+---
+
+<!--
+Licensed to the Apache Software Foundation (ASF) under one or more
+contributor license agreements.  See the NOTICE file distributed with
+this work for additional information regarding copyright ownership.
+The ASF licenses this file to You under the Apache License, Version 2.0
+(the "License"); you may not use this file except in compliance with
+the License.  You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+
+To use the <%=vars.product_name%> HTTP module with Tomcat application servers, you will need to modify Tomcat's `server.xml` and `context.xml` files.
+
+Configuration is slightly different depending on the topology you are setting up: [peer-to-peer](#tomcat_setting_up_the_module_p2p) or [client/server](#tomcat_setting_up_the_module_cs). Refer to [Common Topologies for HTTP Session Management](common_gemfire_topologies.html#common_gemfire_topologies) for more information.
+
+## <a id="tomcat_setting_up_the_module_p2p" class="no-quick-link"></a>Peer-to-Peer Setup
+
+<img src="../../images_svg/http_module_p2p_with_locator.svg" id="tomcat_setting_up_the_module__image_bsm_2gf_sv" class="image" />
+
+To run <%=vars.product_name%> in a peer-to-peer configuration, add the following line to Tomcat's `$CATALINA_HOME$/conf/server.xml` within the `<Server>` tag:
+
+``` pre
+<Listener className="org.apache.geode.modules.session.catalina.PeerToPeerCacheLifecycleListener"
+        locators="localhost[10334]" />
+```
+
+Depending on the version of Tomcat you are using, add one of the following lines to `$CATALINA_HOME$/conf/context.xml` within the `<Context>` tag:
+
+For Tomcat 7.0:
+
+``` pre
+<Manager className="org.apache.geode.modules.session.Tomcat7DeltaSessionManager"/> 
+```
+For Tomcat 8.0 and 8.5:
+
+``` pre
+<Manager className="org.apache.geode.modules.session.catalina.Tomcat8DeltaSessionManager"/> 
+```
+
+For Tomcat 9.0:
+
+``` pre
+<Manager className="org.apache.geode.modules.session.catalina.Tomcat9DeltaSessionManager"/> 
+```
+
+## <a id="tomcat_setting_up_the_module_cs" class="no-quick-link"></a>Client/Server Setup
+
+<img src="../../images_svg/http_module_cs_with_locator.svg" id="tomcat_setting_up_the_module__image_aqn_jjf_sv" class="image" />
+
+To run <%=vars.product_name%> in a client/server configuration, the application server will operate as a <%=vars.product_name%> client. To do this, add the following line to `$CATALINA_HOME$/conf/server.xml` within the `<Server>` tag:
+
+``` pre
+<Listener className="org.apache.geode.modules.session.catalina.ClientServerCacheLifecycleListener"/>
+```
+
+Depending on the version of Tomcat you are using, add one of the following lines to `$CATALINA_HOME$/conf/context.xml` within the `<Context>` tag:
+
+For Tomcat 7.0:
+
+``` pre
+<Manager className="org.apache.geode.modules.session.catalina.Tomcat7DeltaSessionManager"/> 
+```
+
+For Tomcat 8.0 and 8.5:
+
+``` pre
+<Manager className="org.apache.geode.modules.session.catalina.Tomcat8DeltaSessionManager"/> 
+```
+
+For Tomcat 9.0:
+
+``` pre
+<Manager className="org.apache.geode.modules.session.catalina.Tomcat9DeltaSessionManager"/> 
+```
+
+The application server operates as a <%=vars.product_name%> client in this configuration.
+
+Set the CLASSPATH environment variable. For a client/server set up using Apache Tomcat v9 and Geode v1.13,
+the CLASSPATH setting should be similar to the following. Adjust filenames and version numbers as needed for your implementation.
+
+``` pre
+CLASSPATH="$CATALINA_HOME/lib/geode-modules-1.13.3.jar:\
+$CATALINA_HOME/lib/geode-modules-tomcat9-1.13.3.jar:\
+$CATALINA_HOME/lib/servlet-api.jar:\
+$CATALINA_HOME/lib/catalina.jar:\
+$CATALINA_HOME/lib/tomcat-util.jar:\
+$CATALINA_HOME/bin/tomcat-juli.jar"
+```
+
+Start the locator and server using `gfsh`:
+
+``` pre
+$ gfsh start locator --name=locator1 --classpath=$CLASSPATH
+$ gfsh start server --name=server1 --locators=localhost[10334] --server-port=0 \
+  --classpath=$CLASSPATH
+```
+
+## <a id="tomcat_setting_up_the_module__section_2B97047AB30A4C549D91AD258657FBA6" class="no-quick-link"></a>Starting the Application Server
+
+Once you've updated the configuration, you are now ready to start your tc Server or Tomcat instance. Refer to your application server documentation for starting the application server. Once started, <%=vars.product_name%> will automatically launch within the application server process.
+
+**Note:**
+<%=vars.product_name%> session state management provides its own clustering functionality. If you are using <%=vars.product_name%>, you should NOT turn on Tomcat clustering as well.
+
+## <a id="tomcat_setting_up_the_module__section_3E186713737E4D5383E23B41CDFED59B" class="no-quick-link"></a>Verifying that <%=vars.product_name%> Started
+
+You can verify that <%=vars.product_name%> has successfully started by inspecting the Tomcat log file. For example:
+
+``` pre
+15-Jul-2021 10:25:11.483 INFO [main] org.apache.catalina.startup.HostConfig.deployDirectory Deployment of web application directory [/Users/user/workspace/apache-tomcat-9.0.62/webapps/host-manager] has finished in [1,688] ms
+15-Jul-2021 10:25:11.486 INFO [main] org.apache.coyote.AbstractProtocol.start Starting ProtocolHandler ["http-nio-8080"]
+15-Jul-2021 10:25:11.493 INFO [main] org.apache.catalina.startup.Catalina.start Server startup in [11682] milliseconds
+```
+
